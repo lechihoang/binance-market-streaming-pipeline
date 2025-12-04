@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.hypothesis/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.streaming.example
+
+# Kiro
+.kiro/
+
+# Data files
+data/
+*.duckdb
+*.duckdb.wal
+*.parquet
+
+# Docker volumes
+postgres-db-volume/
+postgres-data-volume/
+minio-data/
+grafana-storage/
+prometheus-data/
+
+# Spark checkpoints
+spark-checkpoints/
+/tmp/spark-checkpoints/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb

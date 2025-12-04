@@ -1,0 +1,49 @@
+apiVersion: 1
+
+deleteDatasources:
+  - name: Redis
+    orgId: 1
+  - name: FastAPI
+    orgId: 1
+
+datasources:
+  - name: Redis
+    type: redis-datasource
+    uid: redis
+    access: proxy
+    url: redis:6379
+    isDefault: false
+    editable: false
+
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+
+  - name: FastAPI
+    type: marcusolsson-json-datasource
+    uid: fastapi
+    access: proxy
+    url: http://crypto-api:8000
+    isDefault: false
+    editable: false
+
+  - name: PostgreSQL
+    type: postgres
+    uid: postgresql
+    access: proxy
+    url: postgres-data:5432
+    user: crypto
+    database: crypto_data
+    secureJsonData:
+      password: crypto
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 10
+      maxIdleConns: 5
+      connMaxLifetime: 14400
+    isDefault: false
+    editable: false

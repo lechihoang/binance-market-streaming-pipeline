@@ -1,0 +1,93 @@
+# JMX Exporter Configuration for Spark Metrics
+# Used to export Spark JMX metrics to Prometheus format
+
+# Convert metric names to lowercase
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+# Whitelist of JMX objects to export
+whitelistObjectNames:
+  # JVM metrics
+  - "java.lang:type=Memory"
+  - "java.lang:type=GarbageCollector,*"
+  - "java.lang:type=Threading"
+  - "java.lang:type=Runtime"
+  - "java.lang:type=OperatingSystem"
+  - "java.nio:type=BufferPool,*"
+  
+  # Spark metrics
+  - "metrics:name=*.driver.*"
+  - "metrics:name=*.executor.*"
+  - "metrics:name=*.streaming.*"
+  - "metrics:name=*.BlockManager.*"
+  - "metrics:name=*.DAGScheduler.*"
+  - "metrics:name=*.jvm.*"
+
+# Blacklist patterns (exclude these)
+blacklistObjectNames:
+  - "java.lang:type=MemoryPool,*"
+
+# Rules for transforming metrics
+rules:
+  # JVM Memory
+  - pattern: 'java.lang<type=Memory><HeapMemoryUsage>(\w+)'
+    name: jvm_memory_heap_$1_bytes
+    type: GAUGE
+    
+  - pattern: 'java.lang<type=Memory><NonHeapMemoryUsage>(\w+)'
+    name: jvm_memory_nonheap_$1_bytes
+    type: GAUGE
+  
+  # JVM Garbage Collection
+  - pattern: 'java.lang<type=GarbageCollector, name=(\w+)><>CollectionCount'
+    name: jvm_gc_collection_count_total
+    labels:
+      gc: "$1"
+    type: COUNTER
+    
+  - pattern: 'java.lang<type=GarbageCollector, name=(\w+)><>CollectionTime'
+    name: jvm_gc_collection_seconds_total
+    labels:
+      gc: "$1"
+    type: COUNTER
+    valueFactor: 0.001
+  
+  # JVM Threading
+  - pattern: 'java.lang<type=Threading><>ThreadCount'
+    name: jvm_threads_current
+    type: GAUGE
+    
+  - pattern: 'java.lang<type=Threading><>DaemonThreadCount'
+    name: jvm_threads_daemon
+    type: GAUGE
+  
+  # Spark Streaming Metrics
+  - pattern: 'metrics<name=(\w+)\.streaming\.(\w+)\.(\w+)><>Value'
+    name: spark_streaming_$2_$3
+    labels:
+      app: "$1"
+    type: GAUGE
+  
+  # Spark Driver Metrics
+  - pattern: 'metrics<name=(\w+)\.driver\.(\w+)\.(\w+)><>Value'
+    name: spark_driver_$2_$3
+    labels:
+      app: "$1"
+    type: GAUGE
+  
+  # Spark Executor Metrics
+  - pattern: 'metrics<name=(\w+)\.executor\.(\w+)\.(\w+)><>Value'
+    name: spark_executor_$2_$3
+    labels:
+      app: "$1"
+    type: GAUGE
+  
+  # Spark JVM Metrics
+  - pattern: 'metrics<name=(\w+)\.jvm\.(\w+)\.(\w+)><>Value'
+    name: spark_jvm_$2_$3
+    labels:
+      app: "$1"
+    type: GAUGE
+  
+  # Default rule for other metrics
+  - pattern: ".*"

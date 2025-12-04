@@ -1,0 +1,40 @@
+# Dockerfile for PySpark Streaming Jobs
+# Optimized for 8GB RAM environment with minimal resource footprint
+
+FROM python:3.11-slim
+
+# Install Java (required for Spark)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    openjdk-17-jre-headless \
+    curl \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Java environment
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+# Install PySpark and dependencies
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY src/ ./src/
+COPY scripts/ ./scripts/
+
+# Create directories for checkpoints and data
+RUN mkdir -p /tmp/spark-checkpoints /app/data /app/logs
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV SPARK_HOME=/usr/local/lib/python3.11/site-packages/pyspark
+ENV PATH="${SPARK_HOME}/bin:${PATH}"
+
+# Default command (can be overridden)
+CMD ["python", "-m", "pyspark_streaming_processor.jobs.trade_aggregation_job"]

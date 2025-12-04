@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "binance-kafka-connector"
+version = "0.1.0"
+description = "Real-time data ingestion pipeline connecting Binance WebSocket API to Kafka"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "websockets>=12.0",
+    "kafka-python-ng>=2.2.0",
+    "pydantic>=2.0.0",
+    "cityhash>=0.4.0",
+    "orjson>=3.9.0",
+    "redis>=5.0.0",
+    "duckdb>=0.9.0",
+    "pyarrow>=14.0.0",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "slowapi>=0.1.9",
+    "prometheus-fastapi-instrumentator>=6.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "hypothesis>=6.0.0",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-mock>=3.0.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
