@@ -56,8 +56,10 @@ services:
     deploy:
       resources:
         limits:
+          cpus: '0.5'
           memory: 512M
         reservations:
+          cpus: '0.25'
           memory: 256M
 
 
@@ -240,7 +242,7 @@ services:
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
       AIRFLOW__WEBSERVER__RBAC: 'true'
-      AIRFLOW__WEBSERVER__WORKERS: '2'
+      AIRFLOW__WEBSERVER__WORKERS: '1'
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT:-6379}
@@ -274,12 +276,16 @@ services:
     deploy:
       resources:
         limits:
-          memory: 768M
+          cpus: '0.5'
+          memory: 512M
         reservations:
-          memory: 384M
+          cpus: '0.25'
+          memory: 256M
 
 
   # Airflow Scheduler
+  # Note: Runs Spark jobs as subprocesses, needs more memory
+  # Spark jobs use 512m executor + 512m driver = ~1GB per job
   airflow-scheduler:
     build:
       context: .
@@ -330,12 +336,15 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    stop_grace_period: 45s
     deploy:
       resources:
         limits:
-          memory: 1536M
+          cpus: '2.5'
+          memory: 1800M
         reservations:
-          memory: 512M
+          cpus: '1.0'
+          memory: 768M
 
 
   # Redis Exporter - Export Redis metrics to Prometheus
@@ -551,9 +560,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 300M
+          memory: 256M
         reservations:
-          memory: 150M
+          memory: 128M
 
 volumes:
   postgres-db-volume:

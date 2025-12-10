@@ -230,22 +230,27 @@ with DAG(
         run_anomaly_detection_job >> validate_anomaly
     
     # ==========================================================================
-    # TaskGroup 5: Cleanup
+    # TaskGroup 5: Cleanup (runs regardless of upstream failures)
     # ==========================================================================
-    with TaskGroup("cleanup") as cleanup:
-        cleanup_streaming_task = PythonOperator(
-            task_id='cleanup_streaming',
-            python_callable=cleanup_streaming_resources,
-            op_kwargs={
-                'redis_host': redis_host,
-                'redis_port': redis_port,
-            },
-            trigger_rule=TriggerRule.ALL_DONE,  # Run regardless of upstream status
-        )
+    # Note: cleanup task is outside TaskGroup to allow trigger_rule to work properly
+    # TaskGroups don't propagate trigger_rule to their dependencies
+    cleanup_streaming_task = PythonOperator(
+        task_id='cleanup_streaming',
+        python_callable=cleanup_streaming_resources,
+        op_kwargs={
+            'redis_host': redis_host,
+            'redis_port': redis_port,
+        },
+        trigger_rule=TriggerRule.ALL_DONE,  # Run regardless of upstream status
+    )
     
     # ==========================================================================
     # TaskGroup Dependencies
     # ==========================================================================
-    # Maintain dependency order: health_checks >> trade_aggregation >> 
-    # technical_indicators >> anomaly_detection >> cleanup
-    health_checks >> trade_aggregation >> technical_indicators >> anomaly_detection >> cleanup
+    # Main flow: health_checks >> trade_aggregation >> technical_indicators >> anomaly_detection
+    # Cleanup runs after all tasks complete (success or fail)
+    health_checks >> trade_aggregation >> technical_indicators >> anomaly_detection
+    
+    # Cleanup depends on ALL upstream tasks with ALL_DONE trigger
+    # This ensures cleanup runs even if any upstream task fails
+    [health_checks, trade_aggregation, technical_indicators, anomaly_detection] >> cleanup_streaming_task
