@@ -13,8 +13,7 @@ from fastapi import APIRouter, Depends, Request
 
 from src.api.dependencies import get_redis, get_postgres
 from src.api.models import HealthResponse, MetricsResponse, StatusResponse, ServiceHealth
-from src.storage.redis_storage import RedisStorage
-from src.storage.postgres_storage import PostgresStorage
+from src.storage import RedisStorage, PostgresStorage
 
 
 router = APIRouter(tags=["system"])

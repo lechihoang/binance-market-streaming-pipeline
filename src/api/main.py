@@ -18,7 +18,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from src.api.routers import market, analytics, alerts, system, realtime
+from src.api.routers import market_routes, analytics_routes, system
 
 
 # Rate limit configuration
@@ -176,7 +176,11 @@ The API automatically routes queries to the appropriate storage tier:
     openapi_tags=[
         {
             "name": "market",
-            "description": "Real-time market data endpoints - ticker, price, and recent trades",
+            "description": "Real-time market data endpoints - ticker, price, trades, top movers, and WebSocket streaming",
+        },
+        {
+            "name": "ticker",
+            "description": "Real-time ticker data from hot path - low latency (~50ms)",
         },
         {
             "name": "analytics",
@@ -185,10 +189,6 @@ The API automatically routes queries to the appropriate storage tier:
         {
             "name": "alerts",
             "description": "Whale alerts and anomaly detection results",
-        },
-        {
-            "name": "realtime",
-            "description": "WebSocket endpoints for real-time data streaming",
         },
         {
             "name": "system",
@@ -266,10 +266,11 @@ async def root():
 
 
 # Include routers with tags for OpenAPI documentation
-app.include_router(market.router, prefix="/api/v1/market", tags=["market"])
-app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
-app.include_router(alerts.router, prefix="/api/v1/alerts", tags=["alerts"])
-app.include_router(realtime.router, prefix="/api/v1/realtime", tags=["realtime"])
+# Market routes: market data, ticker, and realtime WebSocket endpoints
+app.include_router(market_routes.router, prefix="/api/v1/market", tags=["market"])
+# Analytics routes: klines, indicators, volume analysis, volatility, and alerts
+app.include_router(analytics_routes.router, prefix="/api/v1/analytics", tags=["analytics"])
+# System routes: health, metrics, and status
 app.include_router(system.router, prefix="/api/v1/system", tags=["system"])
 
 # Prometheus metrics instrumentation

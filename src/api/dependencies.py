@@ -8,10 +8,7 @@ for connection reuse across requests.
 import os
 from functools import lru_cache
 
-from src.storage.redis_storage import RedisStorage
-from src.storage.postgres_storage import PostgresStorage
-from src.storage.minio_storage import MinioStorage
-from src.storage.query_router import QueryRouter
+from src.storage import RedisStorage, PostgresStorage, MinioStorage, QueryRouter
 
 
 @lru_cache()

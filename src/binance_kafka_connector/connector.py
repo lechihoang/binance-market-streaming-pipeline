@@ -9,11 +9,9 @@ import logging
 import signal
 from typing import Optional
 
-from .config import config
-from .websocket_client import BinanceWebSocketClient
-from .processor import MessageProcessor
-from .batcher import MessageBatcher
-from .kafka_producer import KafkaProducerClient
+from .core import config
+from .client import BinanceWebSocketClient, MessageProcessor
+from .producer import MessageBatcher, KafkaProducerClient
 
 logger = logging.getLogger(__name__)
 

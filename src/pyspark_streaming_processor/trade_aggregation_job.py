@@ -26,15 +26,18 @@ from pyspark.sql.types import (
     LongType, BooleanType, TimestampType
 )
 
-from .config import Config
-from .connectors import RedisConnector
+from .core import Config, RedisConnector
 from .graceful_shutdown import GracefulShutdown
 
 # Import storage tier classes for StorageWriter integration
-from src.storage.redis_storage import RedisStorage
-from src.storage.postgres_storage import PostgresStorage
-from src.storage.minio_storage import MinioStorage
-from src.storage.storage_writer import StorageWriter
+from src.storage import RedisStorage, PostgresStorage, MinioStorage, StorageWriter
+
+# Import metrics utilities for production monitoring
+from src.utils.metrics import (
+    record_error,
+    record_message_processed,
+    track_latency,
+)
 
 
 class StructuredFormatter(logging.Formatter):
@@ -622,126 +625,146 @@ class TradeAggregationJob:
                 self.logger.info(f"Batch {batch_id}: Skipping due to shutdown request")
                 return
             
-            start_time = time.time()
-            
-            self.logger.info(f"write_to_sinks called for batch {batch_id}")
-            
-            # Log memory usage at start of batch (inline)
-            self._log_memory_metrics(batch_id=batch_id, alert_threshold_pct=80.0)
-            
-            # Check if batch is empty and determine if we should stop
-            is_empty = batch_df.isEmpty()
-            
-            if self.should_stop(is_empty):
-                self.logger.info(f"Batch {batch_id}: Stopping query due to auto-stop condition")
-                if self.query:
-                    self.query.stop()
-                return
-            
-            if is_empty:
-                self.logger.info(f"Batch {batch_id} is EMPTY, skipping writes")
-                return
-            
-            # Mark batch as started for graceful shutdown tracking (Requirement 5.1)
-            self.graceful_shutdown.mark_batch_start(batch_id)
-            
-            # Collect data for writing
-            records = batch_df.collect()
-            record_count = len(records)
-            
-            self.logger.info(f"Writing batch {batch_id} with {record_count} records to sinks")
-            
-            # Write to Kafka (for downstream consumers like Technical Indicators job)
-            try:
-                kafka_df = batch_df.select(
-                    col("symbol").cast("string").alias("key"),
-                    to_json(struct(*[col(c) for c in batch_df.columns])).alias("value")
-                )
+            # Track batch processing latency using utils metrics
+            with track_latency("spark_trade_aggregation", "batch_processing"):
+                self._write_to_sinks_impl(batch_df, batch_id)
                 
-                kafka_df.write \
-                    .format("kafka") \
-                    .option("kafka.bootstrap.servers", self.config.kafka.bootstrap_servers) \
-                    .option("topic", self.config.kafka.topic_processed_aggregations) \
-                    .option("kafka.enable.idempotence", str(self.config.kafka.enable_idempotence).lower()) \
-                    .option("kafka.acks", self.config.kafka.acks) \
-                    .option("kafka.max.in.flight.requests.per.connection", 
-                           str(self.config.kafka.max_in_flight_requests_per_connection)) \
-                    .save()
-                
-                self.logger.debug(f"Batch {batch_id}: Wrote to Kafka topic {self.config.kafka.topic_processed_aggregations}")
-            except Exception as e:
-                self.logger.error(f"Batch {batch_id}: Failed to write to Kafka: {str(e)}")
-            
-            # Write to 3-tier storage using StorageWriter (Redis, DuckDB, Parquet)
-            # Per Requirements 5.1: Redis with overwrite, DuckDB with upsert, Parquet with append
-            success_count = 0
-            failure_count = 0
-            
-            for row in records:
-                try:
-                    # Convert row to aggregation data dict
-                    aggregation_data = {
-                        'timestamp': row.window_start,
-                        'symbol': row.symbol,
-                        'interval': row.window_duration,
-                        'open': float(row.open) if row.open else None,
-                        'high': float(row.high) if row.high else None,
-                        'low': float(row.low) if row.low else None,
-                        'close': float(row.close) if row.close else None,
-                        'volume': float(row.volume) if row.volume else None,
-                        'quote_volume': float(row.quote_volume) if hasattr(row, 'quote_volume') and row.quote_volume else 0,
-                        'trades_count': int(row.trade_count) if hasattr(row, 'trade_count') and row.trade_count else 0,
-                    }
-                    
-                    # Write to all 3 tiers via StorageWriter
-                    results = self.storage_writer.write_aggregation(aggregation_data)
-                    
-                    if all(results.values()):
-                        success_count += 1
-                    else:
-                        failure_count += 1
-                        failed_tiers = [k for k, v in results.items() if not v]
-                        self.logger.warning(
-                            f"Batch {batch_id}: Partial write failure for {row.symbol} - "
-                            f"failed tiers: {failed_tiers}"
-                        )
-                        
-                except Exception as e:
-                    failure_count += 1
-                    self.logger.error(f"Batch {batch_id}: Failed to write aggregation for {row.symbol}: {str(e)}")
-            
-            self.logger.info(
-                f"Batch {batch_id}: StorageWriter completed - "
-                f"{success_count} succeeded, {failure_count} failed"
-            )
-            
-            # Log batch metrics (inline)
-            duration = time.time() - start_time
-            
-            # Get watermark from batch if available
-            watermark = None
-            try:
-                if records:
-                    watermark = str(records[0].window_start) if hasattr(records[0], 'window_start') else None
-            except:
-                pass
-            
-            # Log comprehensive processing metrics (inline)
-            self._log_processing_metrics(
-                batch_id,
-                self.config.spark.checkpoint_location,
-                duration,
-                record_count,
-                watermark
-            )
-            
-            # Mark batch as completed for graceful shutdown tracking (Requirement 5.1)
-            self.graceful_shutdown.mark_batch_end(batch_id)
-            
         except Exception as e:
+            # Record error metric for batch processing failure
+            record_error(
+                service="spark_trade_aggregation",
+                error_type="batch_processing_error",
+                severity="error"
+            )
             self.logger.error(f"Batch {batch_id}: Error in write_to_sinks: {str(e)}", exc_info=True)
             # Ensure batch is marked as ended even on error (Requirement 5.3)
             self.graceful_shutdown.mark_batch_end(batch_id)
+    
+    def _write_to_sinks_impl(self, batch_df: DataFrame, batch_id: int) -> None:
+        """Internal implementation of write_to_sinks with metrics tracking."""
+        start_time = time.time()
+        
+        self.logger.info(f"write_to_sinks called for batch {batch_id}")
+        
+        # Log memory usage at start of batch (inline)
+        self._log_memory_metrics(batch_id=batch_id, alert_threshold_pct=80.0)
+        
+        # Check if batch is empty and determine if we should stop
+        is_empty = batch_df.isEmpty()
+        
+        if self.should_stop(is_empty):
+            self.logger.info(f"Batch {batch_id}: Stopping query due to auto-stop condition")
+            if self.query:
+                self.query.stop()
+            return
+        
+        if is_empty:
+            self.logger.info(f"Batch {batch_id} is EMPTY, skipping writes")
+            return
+        
+        # Mark batch as started for graceful shutdown tracking (Requirement 5.1)
+        self.graceful_shutdown.mark_batch_start(batch_id)
+        
+        # Collect data for writing
+        records = batch_df.collect()
+        record_count = len(records)
+        
+        self.logger.info(f"Writing batch {batch_id} with {record_count} records to sinks")
+        
+        # Write to Kafka (for downstream consumers like Technical Indicators job)
+        try:
+            kafka_df = batch_df.select(
+                col("symbol").cast("string").alias("key"),
+                to_json(struct(*[col(c) for c in batch_df.columns])).alias("value")
+            )
+            
+            kafka_df.write \
+                .format("kafka") \
+                .option("kafka.bootstrap.servers", self.config.kafka.bootstrap_servers) \
+                .option("topic", self.config.kafka.topic_processed_aggregations) \
+                .option("kafka.enable.idempotence", str(self.config.kafka.enable_idempotence).lower()) \
+                .option("kafka.acks", self.config.kafka.acks) \
+                .option("kafka.max.in.flight.requests.per.connection", 
+                       str(self.config.kafka.max_in_flight_requests_per_connection)) \
+                .save()
+            
+            self.logger.debug(f"Batch {batch_id}: Wrote to Kafka topic {self.config.kafka.topic_processed_aggregations}")
+        except Exception as e:
+            self.logger.error(f"Batch {batch_id}: Failed to write to Kafka: {str(e)}")
+        
+        # Write to 3-tier storage using StorageWriter (Redis, DuckDB, Parquet)
+        # Per Requirements 5.1: Redis with overwrite, DuckDB with upsert, Parquet with append
+        success_count = 0
+        failure_count = 0
+        
+        for row in records:
+            try:
+                # Convert row to aggregation data dict
+                aggregation_data = {
+                    'timestamp': row.window_start,
+                    'symbol': row.symbol,
+                    'interval': row.window_duration,
+                    'open': float(row.open) if row.open else None,
+                    'high': float(row.high) if row.high else None,
+                    'low': float(row.low) if row.low else None,
+                    'close': float(row.close) if row.close else None,
+                    'volume': float(row.volume) if row.volume else None,
+                    'quote_volume': float(row.quote_volume) if hasattr(row, 'quote_volume') and row.quote_volume else 0,
+                    'trades_count': int(row.trade_count) if hasattr(row, 'trade_count') and row.trade_count else 0,
+                }
+                
+                # Write to all 3 tiers via StorageWriter
+                results = self.storage_writer.write_aggregation(aggregation_data)
+                
+                if all(results.values()):
+                    success_count += 1
+                else:
+                    failure_count += 1
+                    failed_tiers = [k for k, v in results.items() if not v]
+                    self.logger.warning(
+                        f"Batch {batch_id}: Partial write failure for {row.symbol} - "
+                        f"failed tiers: {failed_tiers}"
+                    )
+                    
+            except Exception as e:
+                failure_count += 1
+                self.logger.error(f"Batch {batch_id}: Failed to write aggregation for {row.symbol}: {str(e)}")
+        
+        # Record message processed metrics for successful writes
+        for _ in range(success_count):
+            record_message_processed(
+                service="spark_trade_aggregation",
+                topic="processed_aggregations",
+                status="success"
+            )
+        
+        self.logger.info(
+            f"Batch {batch_id}: StorageWriter completed - "
+            f"{success_count} succeeded, {failure_count} failed"
+        )
+        
+        # Log batch metrics (inline)
+        duration = time.time() - start_time
+        
+        # Get watermark from batch if available
+        watermark = None
+        try:
+            if records:
+                watermark = str(records[0].window_start) if hasattr(records[0], 'window_start') else None
+        except:
+            pass
+        
+        # Log comprehensive processing metrics (inline)
+        self._log_processing_metrics(
+            batch_id,
+            self.config.spark.checkpoint_location,
+            duration,
+            record_count,
+            watermark
+        )
+        
+        # Mark batch as completed for graceful shutdown tracking (Requirement 5.1)
+        self.graceful_shutdown.mark_batch_end(batch_id)
     
     def run(self) -> None:
         """
@@ -810,6 +833,12 @@ class TradeAggregationJob:
                 self.logger.info("Trade Aggregation Job completed successfully")
             
         except Exception as e:
+            # Record error metric for job failure
+            record_error(
+                service="spark_trade_aggregation",
+                error_type="job_failure",
+                severity="critical"
+            )
             self.logger.error(f"Job failed with error: {str(e)}", 
                             extra={"error": str(e)}, 
                             exc_info=True)

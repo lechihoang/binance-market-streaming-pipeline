@@ -13,9 +13,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from .redis_storage import RedisStorage
-from .postgres_storage import PostgresStorage
-from .minio_storage import MinioStorage
+from .redis import RedisStorage
+from .backends import PostgresStorage, MinioStorage
 
 logger = logging.getLogger(__name__)
 

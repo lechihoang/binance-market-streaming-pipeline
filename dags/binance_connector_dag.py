@@ -58,14 +58,20 @@ with DAG(
     )
     
     # Task 2: Run Binance connector
+    # Streams config is loaded from binance_kafka_connector.config module
+    # Only override BINANCE_STREAMS env var if explicitly set, otherwise use module defaults
+    connector_env = {
+        'KAFKA_BOOTSTRAP_SERVERS': os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092'),
+    }
+    # Only pass BINANCE_STREAMS if explicitly set in environment
+    if os.getenv('BINANCE_STREAMS'):
+        connector_env['BINANCE_STREAMS'] = os.getenv('BINANCE_STREAMS')
+    
     run_binance_connector = BashOperator(
         task_id='run_binance_connector',
         bash_command='PYTHONPATH=/opt/airflow/src:$PYTHONPATH /usr/local/bin/python -m binance_kafka_connector',
         cwd='/opt/airflow',
-        env={
-            'KAFKA_BOOTSTRAP_SERVERS': os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092'),
-            'BINANCE_STREAMS': os.getenv('BINANCE_STREAMS', 'btcusdt@trade,ethusdt@trade,bnbusdt@trade,solusdt@trade'),
-        },
+        env=connector_env,
     )
     
     # Task 3: Cleanup connector resources

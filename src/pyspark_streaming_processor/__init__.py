@@ -4,12 +4,11 @@ PySpark Streaming Processor
 Real-time data processing pipeline using Apache Spark Structured Streaming
 to process cryptocurrency market data from Kafka.
 
-Structure (simplified):
+Structure (consolidated):
+- core.py: Configuration classes and connector utilities
 - trade_aggregation_job.py: Aggregates raw trades into OHLCV candles
-- technical_indicators_job.py: Calculates technical indicators (SMA, EMA, RSI, MACD, BB, ATR)
-- anomaly_detection_job.py: Detects all 6 anomaly types (whale, volume spike, price spike, RSI extreme, BB breakout, MACD crossover)
-- connectors.py: Connector utilities for Kafka, Redis, DuckDB
-- config.py: Configuration management
+- analytics_jobs.py: Technical indicators and anomaly detection jobs
+- graceful_shutdown.py: Graceful shutdown utility
 
 Storage Architecture:
 - Hot Path: Redis (real-time queries)
@@ -19,30 +18,56 @@ Storage Architecture:
 
 __version__ = "0.1.0"
 
-# Job classes
-from .trade_aggregation_job import TradeAggregationJob
-from .technical_indicators_job import TechnicalIndicatorsJob
-from .anomaly_detection_job import AnomalyDetectionJob
-
-# Connectors
-from .connectors import (
-    KafkaConnector,
-    RedisConnector,
-    DuckDBConnector,
+# Configuration classes from core.py
+from .core import (
+    Config,
+    KafkaConfig,
+    SparkConfig,
+    RedisConfig,
+    PostgresConfig,
+    MinioConfig,
 )
 
-# Configuration
-from .config import Config
+# Connectors from core.py
+from .core import (
+    KafkaConnector,
+    RedisConnector,
+)
+
+# Job classes
+from .trade_aggregation_job import TradeAggregationJob
+from .analytics_jobs import (
+    TechnicalIndicatorsJob,
+    AnomalyDetectionJob,
+    IndicatorCalculator,
+    CandleState,
+)
+
+# Graceful shutdown utility
+# Re-export from utils via graceful_shutdown.py for backward compatibility
+# (Requirement 11.1: Re-export GracefulShutdown from utils)
+from .graceful_shutdown import GracefulShutdown, ShutdownState, ShutdownEvent
 
 __all__ = [
+    # Configuration
+    "Config",
+    "KafkaConfig",
+    "SparkConfig",
+    "RedisConfig",
+    "PostgresConfig",
+    "MinioConfig",
+    # Connectors
+    "KafkaConnector",
+    "RedisConnector",
     # Jobs
     "TradeAggregationJob",
     "TechnicalIndicatorsJob",
     "AnomalyDetectionJob",
-    # Connectors
-    "KafkaConnector",
-    "RedisConnector",
-    "DuckDBConnector",
-    # Config
-    "Config",
+    # Utilities
+    "IndicatorCalculator",
+    "CandleState",
+    # Graceful shutdown (re-exported from utils)
+    "GracefulShutdown",
+    "ShutdownState",
+    "ShutdownEvent",
 ]

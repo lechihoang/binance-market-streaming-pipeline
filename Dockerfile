@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     curl \
     libpq-dev \
+    libsnappy-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy project files
@@ -21,16 +22,18 @@ COPY src/ ./src/
 # Install dependencies
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir . && \
-    pip install --no-cache-dir uvicorn[standard] fastapi redis duckdb psycopg2-binary minio
+    pip install --no-cache-dir uvicorn[standard] fastapi redis psycopg2-binary minio
 
 # Runtime stage
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install curl for healthcheck
-RUN apt-get update && apt-get install -y --no-install-recommends curl && \
-    rm -rf /var/lib/apt/lists/*
+# Install runtime dependencies (curl for healthcheck, libsnappy for Kafka compression)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    libsnappy1v5 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages

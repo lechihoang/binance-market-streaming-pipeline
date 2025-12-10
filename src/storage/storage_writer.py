@@ -1,18 +1,16 @@
 """
 StorageWriter - Multi-tier write coordinator.
 
-Writes data to all 3 storage tiers (Redis, PostgreSQL/DuckDB, MinIO)
+Writes data to all 3 storage tiers (Redis, PostgreSQL, MinIO)
 with partial failure resilience.
 """
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
-from .redis_storage import RedisStorage
-from .duckdb_storage import DuckDBStorage
-from .postgres_storage import PostgresStorage
-from .minio_storage import MinioStorage
+from .redis import RedisStorage
+from .backends import PostgresStorage, MinioStorage
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +20,7 @@ class StorageWriter:
     
     Implements multi-tier write strategy:
     - Redis: overwrite latest values (hot path)
-    - PostgreSQL/DuckDB: upsert on (symbol, timestamp) (warm path)
+    - PostgreSQL: upsert on (symbol, timestamp) (warm path)
     - MinIO: append partitioned files (cold path)
     
     Handles partial failures by logging errors and continuing
@@ -32,7 +30,6 @@ class StorageWriter:
     def __init__(
         self,
         redis: RedisStorage,
-        duckdb: Optional[DuckDBStorage] = None,
         postgres: Optional[PostgresStorage] = None,
         minio: Optional[MinioStorage] = None,
     ):
@@ -40,22 +37,20 @@ class StorageWriter:
         
         Args:
             redis: RedisStorage instance for hot path
-            duckdb: DuckDBStorage instance for warm path (legacy)
-            postgres: PostgresStorage instance for warm path (preferred)
+            postgres: PostgresStorage instance for warm path
             minio: MinioStorage instance for cold path
         """
         self.redis = redis
-        self.duckdb = duckdb
         self.postgres = postgres
         self.minio = minio
         
-        # Determine which warm path storage to use (prefer postgres)
-        self._warm_storage: Optional[Union[PostgresStorage, DuckDBStorage]] = postgres or duckdb
+        # Warm path storage (PostgreSQL)
+        self._warm_storage: Optional[PostgresStorage] = postgres
         # Cold path storage (MinIO)
         self._cold_storage: Optional[MinioStorage] = minio
         
         if self._warm_storage is None:
-            logger.warning("No warm path storage configured (postgres or duckdb)")
+            logger.warning("No warm path storage configured (postgres)")
         if self._cold_storage is None:
             logger.warning("No cold path storage configured (minio)")
     
@@ -63,7 +58,7 @@ class StorageWriter:
         """Write aggregation data to all 3 tiers.
         
         Redis: overwrite aggregations:{symbol}:{interval} hash
-        PostgreSQL/DuckDB: upsert into trades_1m table
+        PostgreSQL: upsert into trades_1m table
         MinIO: append to klines partition
         
         Args:
@@ -92,7 +87,7 @@ class StorageWriter:
         except Exception as e:
             logger.error(f"Redis write_aggregation failed for {symbol}: {e}")
         
-        # Write to warm path (PostgreSQL or DuckDB)
+        # Write to warm path (PostgreSQL)
         timestamp_dt = self._to_datetime(data.get('timestamp'))
         try:
             candle = {
@@ -110,8 +105,7 @@ class StorageWriter:
                 self._warm_storage.upsert_candle(candle)
                 results['warm'] = True
         except Exception as e:
-            storage_name = "PostgreSQL" if self.postgres else "DuckDB"
-            logger.error(f"{storage_name} write_aggregation failed for {symbol}: {e}")
+            logger.error(f"PostgreSQL write_aggregation failed for {symbol}: {e}")
         
         # Write to cold path (MinIO)
         try:
@@ -140,7 +134,7 @@ class StorageWriter:
         """Write technical indicators to all 3 tiers.
         
         Redis: overwrite indicators:{symbol} hash
-        PostgreSQL/DuckDB: upsert into indicators table
+        PostgreSQL: upsert into indicators table
         MinIO: append to indicators partition
         
         Args:
@@ -179,7 +173,7 @@ class StorageWriter:
         except Exception as e:
             logger.error(f"Redis write_indicators failed for {symbol}: {e}")
         
-        # Write to warm path (PostgreSQL or DuckDB)
+        # Write to warm path (PostgreSQL)
         timestamp_dt = self._to_datetime(data.get('timestamp'))
         try:
             indicators_record = {
@@ -199,8 +193,7 @@ class StorageWriter:
                 self._warm_storage.upsert_indicators(indicators_record)
                 results['warm'] = True
         except Exception as e:
-            storage_name = "PostgreSQL" if self.postgres else "DuckDB"
-            logger.error(f"{storage_name} write_indicators failed for {symbol}: {e}")
+            logger.error(f"PostgreSQL write_indicators failed for {symbol}: {e}")
         
         # Write to cold path (MinIO)
         try:
@@ -231,7 +224,7 @@ class StorageWriter:
         """Write alert to all 3 tiers.
         
         Redis: push to alerts:recent list
-        PostgreSQL/DuckDB: insert into alerts table
+        PostgreSQL: insert into alerts table
         MinIO: append to alerts partition
         
         Args:
@@ -251,7 +244,7 @@ class StorageWriter:
         except Exception as e:
             logger.error(f"Redis write_alert failed for {symbol}: {e}")
         
-        # Write to warm path (PostgreSQL or DuckDB)
+        # Write to warm path (PostgreSQL)
         # Map alert_level to severity for PostgreSQL schema compatibility
         timestamp_dt = self._to_datetime(data.get('timestamp'))
         try:
@@ -267,8 +260,7 @@ class StorageWriter:
                 self._warm_storage.insert_alert(alert_record)
                 results['warm'] = True
         except Exception as e:
-            storage_name = "PostgreSQL" if self.postgres else "DuckDB"
-            logger.error(f"{storage_name} write_alert failed for {symbol}: {e}")
+            logger.error(f"PostgreSQL write_alert failed for {symbol}: {e}")
         
         # Write to cold path (MinIO)
         try:

@@ -8,8 +8,7 @@ import logging
 import sys
 
 from .connector import BinanceKafkaConnector
-from .config import config
-from .logging_config import setup_structured_logging
+from .core import config, setup_structured_logging
 
 
 def setup_logging():

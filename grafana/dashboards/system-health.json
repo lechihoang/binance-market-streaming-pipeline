@@ -566,6 +566,71 @@
       }
     },
     {
+      "id": 12,
+      "title": "Ticker Service Status",
+      "type": "stat",
+      "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 20 },
+      "targets": [{ "refId": "A", "method": "GET", "urlPath": "/api/v1/ticker/health", "fields": [{ "jsonPath": "$.status", "name": "Status" }] }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "healthy": { "text": "HEALTHY", "color": "green" } } },
+            { "type": "value", "options": { "degraded": { "text": "DEGRADED", "color": "yellow" } } },
+            { "type": "value", "options": { "unhealthy": { "text": "UNHEALTHY", "color": "red" } } }
+          ]
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } }
+    },
+    {
+      "id": 13,
+      "title": "Active Tickers",
+      "type": "stat",
+      "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 20 },
+      "targets": [{ "refId": "A", "method": "GET", "urlPath": "/api/v1/ticker/health", "fields": [{ "jsonPath": "$.ticker_count", "name": "Tickers" }] }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 1 }, { "color": "green", "value": 5 }] }
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } }
+    },
+    {
+      "id": 14,
+      "title": "Ticker API Latency",
+      "type": "stat",
+      "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 20 },
+      "targets": [{ "refId": "A", "method": "GET", "urlPath": "/api/v1/ticker/health", "fields": [{ "jsonPath": "$.latency_ms", "name": "Latency" }] }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 50 }, { "color": "red", "value": 100 }] }
+        }
+      },
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } }
+    },
+    {
+      "id": 15,
+      "title": "Redis Connected",
+      "type": "stat",
+      "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 20 },
+      "targets": [{ "refId": "A", "method": "GET", "urlPath": "/api/v1/ticker/health", "fields": [{ "jsonPath": "$.redis_connected", "name": "Connected" }] }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "true": { "text": "YES", "color": "green" } } },
+            { "type": "value", "options": { "false": { "text": "NO", "color": "red" } } }
+          ]
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } }
+    },
+    {
       "id": 9,
       "title": "PostgreSQL Data Status",
       "type": "stat",
@@ -577,7 +642,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 20
+        "y": 24
       },
       "targets": [
         {
@@ -629,7 +694,7 @@
         "h": 4,
         "w": 8,
         "x": 8,
-        "y": 20
+        "y": 24
       },
       "targets": [
         {
@@ -681,7 +746,7 @@
         "h": 4,
         "w": 8,
         "x": 16,
-        "y": 20
+        "y": 24
       },
       "targets": [
         {

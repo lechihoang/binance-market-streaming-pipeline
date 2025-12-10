@@ -201,7 +201,6 @@ services:
         airflow connections add 'spark_default' --conn-type 'spark' --conn-host 'local' --conn-extra '{"queue": "root.default", "deploy-mode": "client"}' || true
         airflow variables set kafka_bootstrap_servers "kafka:29092" || true
         airflow variables set redis_host "redis:${REDIS_PORT:-6379}" || true
-        airflow variables set duckdb_path "/opt/airflow/data/streaming.duckdb" || true
         airflow variables set postgres_data_host "postgres-data" || true
         airflow variables set postgres_data_port "5432" || true
         airflow variables set minio_endpoint "minio:9000" || true
@@ -245,7 +244,6 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT:-6379}
-      DUCKDB_PATH: /opt/airflow/data/streaming.duckdb
       # PostgreSQL Data Storage (Warm Path)
       POSTGRES_HOST: postgres-data
       POSTGRES_PORT: '5432'
@@ -307,7 +305,6 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT:-6379}
-      DUCKDB_PATH: /opt/airflow/data/streaming.duckdb
       # PostgreSQL Data Storage (Warm Path)
       POSTGRES_HOST: postgres-data
       POSTGRES_PORT: '5432'
@@ -432,7 +429,6 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT:-6379}
-      DUCKDB_PATH: /app/data/streaming.duckdb
       PARQUET_PATH: /app/data/parquet
       # PostgreSQL Data Storage (Warm Path)
       POSTGRES_DATA_HOST: postgres-data
@@ -464,6 +460,61 @@ services:
           memory: 200M
         reservations:
           memory: 100M
+
+  # Ticker Consumer - Real-time ticker data consumer (Hot Path)
+  # Requirement 2.1: Standalone service separate from Airflow DAGs
+  ticker-consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    hostname: ticker-consumer
+    container_name: ticker-consumer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Kafka configuration (Requirement 2.2, 2.3)
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TICKER_TOPIC: raw_tickers
+      TICKER_CONSUMER_GROUP: ticker-consumer-group
+      KAFKA_AUTO_OFFSET_RESET: latest
+      # Reconnection settings (Requirement 2.4)
+      KAFKA_RECONNECT_BACKOFF_MS: "1000"
+      KAFKA_RECONNECT_BACKOFF_MAX_MS: "60000"
+      # Redis configuration (Requirement 3.1, 3.3)
+      REDIS_HOST: redis
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      TICKER_TTL_SECONDS: "60"
+      # Ticker symbols (Requirement 5.1, 5.2)
+      TICKER_SYMBOLS: ${TICKER_SYMBOLS:-BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,DOTUSDT,MATICUSDT,LINKUSDT,LTCUSDT,UNIUSDT,ATOMUSDT,SHIBUSDT}
+      # Late data handling configuration
+      TICKER_WATERMARK_DELAY_MS: "10000"
+      TICKER_MAX_FUTURE_MS: "5000"
+      TICKER_MAX_TRACKED_SYMBOLS: "100"
+      # Logging
+      LOG_LEVEL: ${TICKER_LOG_LEVEL:-INFO}
+    volumes:
+      - ./src:/app/src
+    command: python -m src.ticker_consumer.main
+    networks:
+      - streaming-network
+    # Health check (Requirement 7.2)
+    # Checks Redis connectivity and data freshness
+    healthcheck:
+      test: ["CMD", "python", "-c", "from src.ticker_consumer.service import health_check_main; exit(health_check_main())"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
 
   # Grafana - Visualization and monitoring dashboards
   grafana:
