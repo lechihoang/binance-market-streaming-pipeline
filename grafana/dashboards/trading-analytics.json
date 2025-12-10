@@ -274,7 +274,7 @@
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/alerts/whale-alerts?limit=50",
+          "urlPath": "/api/v1/analytics/alerts/whale-alerts?limit=50",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
             { "jsonPath": "$[*].symbol", "name": "Symbol" },

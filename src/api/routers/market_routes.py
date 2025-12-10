@@ -597,7 +597,7 @@ async def get_all_realtime_tickers(
     )
 
 
-@router.get("/realtime/health", response_model=TickerHealthResponse, tags=["ticker"])
+@router.get("/ticker-health", response_model=TickerHealthResponse, tags=["ticker"])
 async def get_ticker_health(
     storage: RedisTickerStorage = Depends(get_ticker_storage),
 ) -> TickerHealthResponse:

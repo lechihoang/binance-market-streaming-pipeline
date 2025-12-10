@@ -26,7 +26,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY src/ ./src/
-COPY scripts/ ./scripts/
 
 # Create directories for checkpoints and data
 RUN mkdir -p /tmp/spark-checkpoints /app/data /app/logs

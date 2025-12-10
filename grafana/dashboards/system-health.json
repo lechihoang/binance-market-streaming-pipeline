@@ -174,7 +174,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 4
+        "y": 12
       },
       "targets": [
         {
@@ -252,7 +252,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 4
+        "y": 12
       },
       "targets": [
         {
@@ -330,7 +330,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 12
+        "y": 20
       },
       "targets": [
         {
@@ -414,7 +414,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 12
+        "y": 20
       },
       "targets": [
         {
@@ -498,7 +498,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 12
+        "y": 20
       },
       "targets": [
         {
@@ -570,14 +570,16 @@
       "title": "Ticker Service Status",
       "type": "stat",
       "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 20 },
-      "targets": [{ "refId": "A", "method": "GET", "urlPath": "/api/v1/ticker/health", "fields": [{ "jsonPath": "$.status", "name": "Status" }] }],
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 4 },
+      "targets": [{ "refId": "A", "method": "GET", "urlPath": "/api/v1/market/ticker-health", "fields": [{ "jsonPath": "$.ticker_count", "name": "Status", "type": "number" }] }],
       "fieldConfig": {
         "defaults": {
+          "noValue": "OFFLINE",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 1 }, { "color": "green", "value": 5 }] },
           "mappings": [
-            { "type": "value", "options": { "healthy": { "text": "HEALTHY", "color": "green" } } },
-            { "type": "value", "options": { "degraded": { "text": "DEGRADED", "color": "yellow" } } },
-            { "type": "value", "options": { "unhealthy": { "text": "UNHEALTHY", "color": "red" } } }
+            { "type": "range", "options": { "from": 5, "to": 999, "result": { "text": "HEALTHY", "color": "green" } } },
+            { "type": "range", "options": { "from": 1, "to": 4, "result": { "text": "DEGRADED", "color": "yellow" } } },
+            { "type": "range", "options": { "from": 0, "to": 0, "result": { "text": "UNHEALTHY", "color": "red" } } }
           ]
         }
       },
@@ -588,8 +590,8 @@
       "title": "Active Tickers",
       "type": "stat",
       "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 20 },
-      "targets": [{ "refId": "A", "method": "GET", "urlPath": "/api/v1/ticker/health", "fields": [{ "jsonPath": "$.ticker_count", "name": "Tickers" }] }],
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 4 },
+      "targets": [{ "refId": "A", "method": "GET", "urlPath": "/api/v1/market/ticker-health", "fields": [{ "jsonPath": "$.ticker_count", "name": "Tickers" }] }],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
@@ -603,8 +605,8 @@
       "title": "Ticker API Latency",
       "type": "stat",
       "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 20 },
-      "targets": [{ "refId": "A", "method": "GET", "urlPath": "/api/v1/ticker/health", "fields": [{ "jsonPath": "$.latency_ms", "name": "Latency" }] }],
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 4 },
+      "targets": [{ "refId": "A", "method": "GET", "urlPath": "/api/v1/market/ticker-health", "fields": [{ "jsonPath": "$.latency_ms", "name": "Latency" }] }],
       "fieldConfig": {
         "defaults": {
           "unit": "ms",
@@ -618,13 +620,14 @@
       "title": "Redis Connected",
       "type": "stat",
       "datasource": { "type": "marcusolsson-json-datasource", "uid": "fastapi" },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 20 },
-      "targets": [{ "refId": "A", "method": "GET", "urlPath": "/api/v1/ticker/health", "fields": [{ "jsonPath": "$.redis_connected", "name": "Connected" }] }],
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 4 },
+      "targets": [{ "refId": "A", "method": "GET", "urlPath": "/api/v1/market/ticker-health", "fields": [{ "jsonPath": "$.latency_ms", "name": "Connected", "type": "number" }] }],
       "fieldConfig": {
         "defaults": {
+          "noValue": "OFFLINE",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1000 }] },
           "mappings": [
-            { "type": "value", "options": { "true": { "text": "YES", "color": "green" } } },
-            { "type": "value", "options": { "false": { "text": "NO", "color": "red" } } }
+            { "type": "range", "options": { "from": 0, "to": 999, "result": { "text": "YES", "color": "green" } } }
           ]
         }
       },
@@ -642,7 +645,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 24
+        "y": 8
       },
       "targets": [
         {
@@ -694,7 +697,7 @@
         "h": 4,
         "w": 8,
         "x": 8,
-        "y": 24
+        "y": 8
       },
       "targets": [
         {
@@ -746,7 +749,7 @@
         "h": 4,
         "w": 8,
         "x": 16,
-        "y": 24
+        "y": 8
       },
       "targets": [
         {
