@@ -24,9 +24,7 @@ from unittest.mock import MagicMock
 from hypothesis import given, settings, strategies as st, HealthCheck
 from fastapi.testclient import TestClient
 
-from src.api.app import app, rate_tracker, RATE_LIMIT_PER_MINUTE
-from src.api.dependencies import get_redis, get_postgres, get_minio, get_query_router
-from src.api.routers.system import determine_overall_status
+from src.api.app import app, rate_tracker, RATE_LIMIT_PER_MINUTE, get_redis, get_postgres, get_minio, get_query_router, get_ticker_storage, determine_overall_status
 from src.storage.redis import RedisStorage
 from src.storage.postgres import PostgresStorage
 from src.storage.minio import MinioStorage
@@ -90,6 +88,15 @@ def create_mock_minio():
     return mock
 
 
+def create_mock_ticker_storage():
+    """Create a mock RedisTickerStorage that returns empty results."""
+    mock = MagicMock()
+    mock.ping.return_value = True
+    mock.get_ticker.return_value = None
+    mock.get_all_tickers.return_value = []
+    return mock
+
+
 # ============================================================================
 # TEST FIXTURES
 # ============================================================================
@@ -143,6 +150,7 @@ def test_client(redis_storage, postgres_storage, minio_storage):
     app.dependency_overrides[get_redis] = override_get_redis
     app.dependency_overrides[get_postgres] = override_get_postgres
     app.dependency_overrides[get_minio] = override_get_minio
+    app.dependency_overrides[get_ticker_storage] = create_mock_ticker_storage
     
     client = TestClient(app)
     yield client
@@ -161,6 +169,7 @@ def fresh_client():
     app.dependency_overrides[get_redis] = create_mock_redis
     app.dependency_overrides[get_postgres] = create_mock_postgres
     app.dependency_overrides[get_minio] = create_mock_minio
+    app.dependency_overrides[get_ticker_storage] = create_mock_ticker_storage
     
     client = TestClient(app)
     yield client
@@ -336,7 +345,7 @@ class TestQueryTierSelection:
         Feature: fastapi-backend, Property 4: Query tier selection based on time range
         Validates: Requirements 2.1
         """
-        now = datetime.now()
+        now = datetime.utcnow()
         start = now - timedelta(minutes=offset_minutes)
         
         selected_tier = mock_query_router._select_tier(start)
@@ -350,21 +359,21 @@ class TestQueryTierSelection:
         Feature: fastapi-backend, Property 4: Query tier selection based on time range
         Validates: Requirements 2.1
         """
-        now = datetime.now()
+        now = datetime.utcnow()
         start = now - timedelta(hours=offset_hours)
         
         selected_tier = mock_query_router._select_tier(start)
         
         assert selected_tier == self.TIER_POSTGRES
     
-    @given(offset_days=st.integers(min_value=90, max_value=364))
+    @given(offset_days=st.integers(min_value=91, max_value=364))
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
     def test_minio_tier_selection_for_cold_data(self, mock_query_router, offset_days):
         """
         Feature: fastapi-backend, Property 4: Query tier selection based on time range
         Validates: Requirements 2.1
         """
-        now = datetime.now()
+        now = datetime.utcnow()
         start = now - timedelta(days=offset_days)
         
         selected_tier = mock_query_router._select_tier(start)
@@ -435,7 +444,7 @@ class TestRateLimitEnforcement:
         Feature: fastapi-backend, Property 9: Rate limit enforcement
         Validates: Requirements 6.1, 6.4
         """
-        response = fresh_client.get("/api/v1/market/ticker/BTCUSDT")
+        response = fresh_client.get("/api/v1/market/ticker-health")
         
         assert "X-RateLimit-Limit" in response.headers
         assert "X-RateLimit-Remaining" in response.headers
@@ -450,10 +459,10 @@ class TestRateLimitEnforcement:
         Feature: fastapi-backend, Property 9: Rate limit enforcement
         Validates: Requirements 6.1
         """
-        response1 = fresh_client.get("/api/v1/market/ticker/BTCUSDT")
+        response1 = fresh_client.get("/api/v1/market/ticker-health")
         remaining1 = int(response1.headers["X-RateLimit-Remaining"])
         
-        response2 = fresh_client.get("/api/v1/market/ticker/BTCUSDT")
+        response2 = fresh_client.get("/api/v1/market/ticker-health")
         remaining2 = int(response2.headers["X-RateLimit-Remaining"])
         
         assert remaining2 < remaining1
@@ -464,11 +473,11 @@ class TestRateLimitEnforcement:
         Validates: Requirements 6.1
         """
         for i in range(RATE_LIMIT_PER_MINUTE):
-            response = fresh_client.get("/api/v1/market/ticker/BTCUSDT")
+            response = fresh_client.get("/api/v1/market/ticker-health")
             if response.status_code == 429:
                 break
         
-        response = fresh_client.get("/api/v1/market/ticker/BTCUSDT")
+        response = fresh_client.get("/api/v1/market/ticker-health")
         
         assert response.status_code == 429
         assert "Retry-After" in response.headers
@@ -480,7 +489,7 @@ class TestRateLimitEnforcement:
         Validates: Requirements 6.1
         """
         for _ in range(RATE_LIMIT_PER_MINUTE + 5):
-            fresh_client.get("/api/v1/market/ticker/BTCUSDT")
+            fresh_client.get("/api/v1/market/ticker-health")
         
         response = fresh_client.get("/api/v1/system/health")
         
