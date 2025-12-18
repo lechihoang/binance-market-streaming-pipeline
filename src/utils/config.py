@@ -294,7 +294,6 @@ class RedisConfig:
     
     # TTL settings
     candle_ttl_seconds: int = 3600  # 1 hour
-    indicator_ttl_seconds: int = 3600  # 1 hour
     alert_list_max_size: int = 1000
     
     @classmethod
@@ -309,7 +308,6 @@ class RedisConfig:
             socket_timeout=get_env_int("REDIS_SOCKET_TIMEOUT", 5),
             socket_connect_timeout=get_env_int("REDIS_SOCKET_CONNECT_TIMEOUT", 5),
             candle_ttl_seconds=get_env_int("REDIS_CANDLE_TTL_SECONDS", 3600),
-            indicator_ttl_seconds=get_env_int("REDIS_INDICATOR_TTL_SECONDS", 3600),
             alert_list_max_size=get_env_int("REDIS_ALERT_LIST_MAX_SIZE", 1000),
         )
 

@@ -1,339 +1,387 @@
-# Binance-Kafka Connector
+# Real-Time Cryptocurrency Data Pipeline
 
-Real-time data ingestion pipeline connecting Binance WebSocket API to Kafka.
+A production-grade data engineering project that ingests, processes, and visualizes real-time cryptocurrency market data from Binance. Built with modern streaming technologies and a three-tier storage architecture for optimal query performance across different time ranges.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Tech Stack](#tech-stack)
+- [Features](#features)
+- [Data Flow](#data-flow)
+- [Storage Architecture](#storage-architecture)
+- [Project Structure](#project-structure)
+- [Getting Started](#getting-started)
+- [API Endpoints](#api-endpoints)
+- [Monitoring and Dashboards](#monitoring-and-dashboards)
+- [Airflow DAGs](#airflow-dags)
+- [Configuration](#configuration)
+- [Testing](#testing)
 
 ## Overview
 
-This service connects to Binance WebSocket streams to collect cryptocurrency market data (trades, klines, tickers) and publishes them to Kafka topics with proper validation, enrichment, and batching.
+This project demonstrates a complete real-time data pipeline that:
 
-The system supports two data paths:
-- **Hot Path (Real-time)**: Ticker data flows directly from Kafka to Redis for ultra-low latency (~100-200ms)
-- **Analytics Path**: Trade and kline data flows through Spark for aggregation and analysis (~1-5 seconds)
+1. Connects to Binance WebSocket API to receive live trade and ticker data
+2. Streams data through Apache Kafka for reliable message delivery
+3. Processes data using Apache Spark Structured Streaming for aggregations and anomaly detection
+4. Stores data in a three-tier architecture (Redis, PostgreSQL, MinIO) optimized for different query patterns
+5. Exposes data through a FastAPI REST API with automatic tier routing
+6. Visualizes metrics and data through Grafana dashboards
+7. Orchestrates all workflows using Apache Airflow
 
-## Installation
+## Architecture
 
-```bash
-pip install -e .
+<!-- Add your system architecture diagram here -->
+![System Architecture](docs/images/architecture.png)
+
+The system follows an event-driven architecture with the following components:
+
+- **Data Ingestion Layer**: Binance WebSocket connector pushes real-time data to Kafka
+- **Stream Processing Layer**: Spark Structured Streaming jobs consume from Kafka, compute aggregations, and detect anomalies
+- **Storage Layer**: Three-tier storage with automatic data lifecycle management
+- **API Layer**: FastAPI service with intelligent query routing based on time range
+- **Orchestration Layer**: Airflow manages all pipeline workflows and health checks
+- **Monitoring Layer**: Prometheus metrics with Grafana dashboards
+
+## Tech Stack
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| Message Broker | Apache Kafka | Real-time event streaming |
+| Stream Processing | Apache Spark (PySpark) | Trade aggregation, anomaly detection |
+| Hot Storage | Redis | Real-time data (< 1 hour) |
+| Warm Storage | PostgreSQL | Interactive analytics (< 90 days) |
+| Cold Storage | MinIO (S3-compatible) | Historical archive (> 90 days) |
+| API Framework | FastAPI | REST API with OpenAPI docs |
+| Orchestration | Apache Airflow | Workflow management |
+| Monitoring | Prometheus + Grafana | Metrics and visualization |
+| Containerization | Docker Compose | Local development and deployment |
+
+## Features
+
+### Real-Time Data Ingestion
+- WebSocket connection to Binance with automatic reconnection
+- Support for multiple trading pairs (15+ symbols by default)
+- Trade and ticker data streams
+- Message enrichment with ingestion timestamps
+
+### Stream Processing
+- 1-minute OHLCV (Open, High, Low, Close, Volume) candle aggregation
+- Derived metrics: VWAP, price change percentage, buy/sell ratio
+- Real-time anomaly detection:
+  - Whale alerts (trades > $100,000)
+  - Volume spikes (quote volume > $1M)
+  - Price spikes (> 2% change in 1 minute)
+
+### Three-Tier Storage
+- **Redis (Hot)**: Sub-millisecond access for real-time data
+- **PostgreSQL (Warm)**: SQL queries for 90-day analytics
+- **MinIO (Cold)**: Parquet files for historical analysis
+- Automatic data lifecycle management with daily cleanup jobs
+
+### REST API
+- Automatic query routing based on time range
+- Multi-timeframe klines (1m, 5m, 15m intervals)
+- Rate limiting (100 requests/minute)
+- Prometheus metrics endpoint
+- OpenAPI documentation
+
+### Monitoring
+- Pre-configured Grafana dashboards
+- System health monitoring
+- Trading analytics visualization
+- Real-time market overview
+
+## Data Flow
+
+<!-- Add your data flow diagram here -->
+![Data Flow](docs/images/data-flow.png)
+
+```
+Binance WebSocket API
+        |
+        v
++------------------+
+| Binance Connector|  (WebSocket -> Kafka)
++------------------+
+        |
+        v
++------------------+
+|   Apache Kafka   |  (raw_trades, raw_tickers topics)
++------------------+
+        |
+        +------------------------+
+        |                        |
+        v                        v
++------------------+    +------------------+
+| Ticker Consumer  |    | Trade Aggregation|  (Spark Streaming)
++------------------+    +------------------+
+        |                        |
+        v                        v
++------------------+    +------------------+
+|      Redis       |    | processed_aggs   |  (Kafka topic)
+|   (Hot Path)     |    +------------------+
++------------------+             |
+                                 v
+                        +------------------+
+                        | Anomaly Detection|  (Spark Streaming)
+                        +------------------+
+                                 |
+                                 v
+                        +------------------+
+                        |  Storage Writer  |
+                        +------------------+
+                                 |
+        +------------------------+------------------------+
+        |                        |                        |
+        v                        v                        v
++------------------+    +------------------+    +------------------+
+|      Redis       |    |   PostgreSQL     |    |      MinIO       |
+|   (Hot Path)     |    |  (Warm Path)     |    |   (Cold Path)    |
++------------------+    +------------------+    +------------------+
 ```
 
-For development:
+## Storage Architecture
 
-```bash
-pip install -e ".[dev]"
-```
+| Tier | Storage | Retention | Use Case | Query Latency |
+|------|---------|-----------|----------|---------------|
+| Hot | Redis | 1 hour | Real-time dashboards | < 1ms |
+| Warm | PostgreSQL | 90 days | Interactive analytics | < 100ms |
+| Cold | MinIO (Parquet) | 365+ days | Historical analysis | < 1s |
 
-## Configuration
-
-Configure the connector using environment variables. All settings have sensible defaults.
-
-### Environment Variables
-
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| **WebSocket Configuration** |
-| `BINANCE_WS_URL` | Binance WebSocket endpoint | `wss://stream.binance.com:9443/stream` | No |
-| `BINANCE_STREAMS` | Comma-separated list of streams to subscribe | `btcusdt@trade,ethusdt@trade,bnbusdt@trade,btcusdt@kline_1m,ethusdt@kline_1m,btcusdt@ticker` | No |
-| `PING_INTERVAL_SECONDS` | Keepalive ping interval | `180` | No |
-| `RECONNECT_MAX_DELAY_SECONDS` | Maximum reconnection delay | `60` | No |
-| `WS_CONNECTION_TIMEOUT` | Connection timeout in seconds | `10` | No |
-| **Kafka Configuration** |
-| `KAFKA_BOOTSTRAP_SERVERS` | Kafka broker addresses | `localhost:9092` | No |
-| `KAFKA_COMPRESSION` | Compression type (snappy, gzip, lz4) | `snappy` | No |
-| `KAFKA_ACKS` | Acknowledgment level (0, 1, all) | `1` | No |
-| **Kafka Topics** |
-| `TOPIC_RAW_TRADES` | Topic for trade events | `raw_trades` | No |
-| `TOPIC_RAW_KLINES` | Topic for kline/candlestick data | `raw_klines` | No |
-| `TOPIC_RAW_TICKERS` | Topic for ticker statistics | `raw_tickers` | No |
-| **Batching Configuration** |
-| `BATCH_SIZE` | Maximum messages per batch | `100` | No |
-| `BATCH_TIMEOUT_MS` | Maximum batch age in milliseconds | `100` | No |
-| `BATCH_CHECK_INTERVAL_MS` | Batch check interval in milliseconds | `10` | No |
-| **Logging** |
-| `LOG_LEVEL` | Logging level (DEBUG, INFO, WARNING, ERROR) | `INFO` | No |
-
-### Example Configuration
-
-Create a `.env` file for local development:
-
-```bash
-# WebSocket Configuration
-BINANCE_WS_URL=wss://stream.binance.com:9443/stream
-BINANCE_STREAMS=btcusdt@trade,ethusdt@trade,bnbusdt@trade,btcusdt@kline_1m,ethusdt@kline_1m,btcusdt@ticker
-PING_INTERVAL_SECONDS=180
-RECONNECT_MAX_DELAY_SECONDS=60
-WS_CONNECTION_TIMEOUT=10
-
-# Kafka Configuration
-KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-KAFKA_COMPRESSION=snappy
-KAFKA_ACKS=1
-
-# Kafka Topics
-TOPIC_RAW_TRADES=raw_trades
-TOPIC_RAW_KLINES=raw_klines
-TOPIC_RAW_TICKERS=raw_tickers
-
-# Batching Configuration
-BATCH_SIZE=100
-BATCH_TIMEOUT_MS=100
-BATCH_CHECK_INTERVAL_MS=10
-
-# Logging
-LOG_LEVEL=INFO
-```
-
-## Usage
-
-### Running with Docker (Recommended)
-
-The easiest way to run the connector is using Docker Compose, which includes Kafka and Zookeeper:
-
-```bash
-# Start all services (Zookeeper, Kafka, and Connector)
-docker-compose up -d
-
-# View logs
-docker-compose logs -f binance-connector
-
-# Stop all services
-docker-compose down
-```
-
-The docker-compose setup includes:
-- **Zookeeper**: Kafka coordination service (port 2181)
-- **Kafka**: Message broker (ports 9092, 9093)
-- **Binance Connector**: The data ingestion service
-
-For detailed Docker deployment instructions, monitoring, troubleshooting, and production configuration, see [DOCKER.md](DOCKER.md).
-
-#### Customizing Docker Configuration
-
-Edit the `docker-compose.yml` file to customize environment variables:
-
-```yaml
-binance-connector:
-  environment:
-    BINANCE_STREAMS: "btcusdt@trade,ethusdt@trade"  # Customize streams
-    BATCH_SIZE: "200"                                # Adjust batch size
-    LOG_LEVEL: "DEBUG"                               # Change log level
-```
-
-#### Building the Docker Image
-
-To build the Docker image manually:
-
-```bash
-docker build -t binance-kafka-connector:latest .
-```
-
-### Running Locally
-
-Run the connector as a module (requires local Kafka):
-
-```bash
-python -m binance_kafka_connector
-```
-
-Or programmatically:
-
-```python
-import asyncio
-from binance_kafka_connector import BinanceKafkaConnector
-
-async def main():
-    connector = BinanceKafkaConnector()
-    await connector.run()
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-The connector will:
-1. Connect to Binance WebSocket API
-2. Subscribe to configured streams
-3. Process and validate incoming messages
-4. Batch messages for efficient Kafka production
-5. Send batches to appropriate Kafka topics
-6. Handle reconnections and errors gracefully
-
-### Graceful Shutdown
-
-The connector handles SIGINT (Ctrl+C) and SIGTERM signals gracefully:
-- Stops accepting new messages
-- Flushes all pending batches to Kafka
-- Closes connections cleanly
-
-## Running Tests
-
-```bash
-pytest
-```
-
-Run with coverage:
-
-```bash
-pytest --cov=binance_kafka_connector
-```
+The `QueryRouter` automatically selects the appropriate storage tier based on the requested time range.
 
 ## Project Structure
 
 ```
-src/
-├── binance_kafka_connector/   # Binance WebSocket to Kafka connector
-│   ├── __init__.py
-│   ├── config.py              # Configuration management
-│   ├── models.py              # Pydantic data models
-│   ├── websocket_client.py    # WebSocket connection manager
-│   ├── message_processor.py   # Message parsing and enrichment
-│   ├── message_batcher.py     # Message batching logic
-│   ├── kafka_producer.py      # Kafka producer client
-│   └── connector.py           # Main application orchestrator
-│
-├── ticker_consumer/           # Real-time ticker consumer (Hot Path)
-│   ├── __init__.py
-│   ├── config.py              # Ticker consumer configuration
-│   ├── consumer.py            # Kafka consumer core
-│   ├── validator.py           # Ticker data validation
-│   ├── late_data_handler.py   # Late/stale data handling
-│   ├── error_handler.py       # Error handling and reconnection
-│   ├── healthcheck.py         # Docker health check
-│   └── main.py                # Service entrypoint
-│
-├── storage/                   # Storage layer
-│   ├── redis_ticker_storage.py  # Redis ticker storage (Hot Path)
-│   ├── redis_storage.py         # General Redis storage
-│   ├── postgres_storage.py      # PostgreSQL storage (Warm Path)
-│   └── minio_storage.py         # MinIO storage (Cold Path)
-│
-├── api/                       # REST API
-│   ├── main.py                # FastAPI application
-│   └── routers/
-│       ├── ticker.py          # Real-time ticker endpoints
-│       ├── market.py          # Market data endpoints
-│       └── analytics.py       # Analytics endpoints
-│
-└── streaming/                     # Spark streaming jobs
-    ├── trade_aggregation_job.py
-    ├── technical_indicators_job.py
-    └── anomaly_detection_job.py
-
-dags/                          # Airflow DAGs
-├── streaming_processing_dag.py  # Main streaming pipeline
-├── ticker_monitor_dag.py        # Ticker consumer monitoring
-└── data_quality.py              # Data quality utilities
-
-tests/
-├── test_models.py
-├── test_websocket_client.py
-├── test_message_processor.py
-├── test_message_batcher.py
-├── test_kafka_producer.py
-└── test_connector.py
+.
+├── dags/                          # Airflow DAG definitions
+│   ├── binance_connector_dag.py   # WebSocket connector orchestration
+│   ├── streaming_processing_dag.py # Spark jobs orchestration
+│   ├── lifecycle_cleanup_dag.py   # Data retention management
+│   └── ticker_monitor_dag.py      # Health monitoring
+├── src/
+│   ├── api/
+│   │   └── app.py                 # FastAPI application
+│   ├── binance_kafka_connector/
+│   │   └── connector.py           # Binance WebSocket client
+│   ├── storage/
+│   │   ├── redis.py               # Redis storage operations
+│   │   ├── postgres.py            # PostgreSQL storage operations
+│   │   ├── minio.py               # MinIO storage operations
+│   │   ├── storage_writer.py      # Multi-tier write coordinator
+│   │   ├── query_router.py        # Automatic tier selection
+│   │   └── lifecycle.py           # Data lifecycle management
+│   ├── streaming/
+│   │   ├── base_spark_job.py      # Base class for Spark jobs
+│   │   ├── trade_aggregation_job.py # OHLCV aggregation
+│   │   └── anomaly_detection_job.py # Alert generation
+│   ├── ticker_consumer/
+│   │   └── consumer.py            # Kafka to Redis ticker consumer
+│   ├── utils/
+│   │   ├── config.py              # Configuration management
+│   │   ├── kafka.py               # Kafka utilities
+│   │   ├── logging.py             # Structured logging
+│   │   ├── metrics.py             # Prometheus metrics
+│   │   └── retry.py               # Retry with backoff
+│   └── validators/
+│       └── job_validators.py      # Output validation
+├── grafana/
+│   ├── dashboards/                # Pre-configured dashboards
+│   └── provisioning/              # Auto-provisioning config
+├── config/
+│   └── prometheus.yml             # Prometheus configuration
+├── tests/                         # Test suite
+├── docker-compose.yml             # Container orchestration
+├── Dockerfile                     # Multi-purpose container image
+└── requirements.txt               # Python dependencies
 ```
 
-## Real-time Ticker Service
+## Getting Started
 
-The Real-time Ticker service provides ultra-low latency cryptocurrency price data by bypassing Spark processing and writing directly to Redis.
+### Prerequisites
 
-### Architecture
+- Docker and Docker Compose
+- 8GB+ RAM recommended
+- Python 3.11+ (for local development)
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    REAL-TIME PATH (Hot Path)                     │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Binance WS (@ticker) → Kafka (raw_tickers) → Ticker Consumer   │
-│                                                    ↓             │
-│                                               Redis Hash         │
-│                                                    ↓             │
-│                                            API Endpoints         │
-│                                                                  │
-│  Latency: ~100-200ms                                            │
-└─────────────────────────────────────────────────────────────────┘
+### Quick Start
+
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd <project-directory>
 ```
 
-### Supported Symbols
-
-By default, the system tracks 15 high market cap cryptocurrencies:
-- BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT
-- ADAUSDT, DOGEUSDT, AVAXUSDT, DOTUSDT, MATICUSDT
-- LINKUSDT, LTCUSDT, UNIUSDT, ATOMUSDT, SHIBUSDT
-
-### Ticker Consumer Configuration
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `TICKER_SYMBOLS` | Comma-separated list of symbols to track | 15 default symbols |
-| `KAFKA_TICKER_TOPIC` | Kafka topic for ticker data | `raw_tickers` |
-| `TICKER_CONSUMER_GROUP` | Kafka consumer group | `ticker-consumer-group` |
-| `TICKER_TTL_SECONDS` | Redis TTL for ticker data | `60` |
-| `TICKER_WATERMARK_DELAY_MS` | Late data watermark delay | `10000` |
-| `TICKER_MAX_FUTURE_MS` | Max clock skew tolerance | `5000` |
-
-### API Endpoints
-
-| Endpoint | Description | Response Time |
-|----------|-------------|---------------|
-| `GET /api/v1/ticker/{symbol}` | Get single ticker data | < 50ms |
-| `GET /api/v1/tickers` | Get all ticker data | < 100ms |
-| `GET /api/v1/ticker/health` | Ticker service health | < 50ms |
-
-### Example API Response
-
-```json
-{
-  "symbol": "BTCUSDT",
-  "last_price": "42000.00",
-  "price_change": "500.00",
-  "price_change_pct": "1.2",
-  "open": "41500.00",
-  "high": "42500.00",
-  "low": "41000.00",
-  "volume": "50000.00",
-  "quote_volume": "2000000000.00",
-  "trades_count": 18051,
-  "updated_at": 1672515782136,
-  "complete": true
-}
+2. Copy environment configuration:
+```bash
+cp .env.example .env
 ```
 
-### Redis Storage Format
-
-Ticker data is stored in Redis Hashes with the key pattern `ticker:{SYMBOL}`:
-
-```
-Key: ticker:BTCUSDT
-Fields:
-  - last_price: "42000.00"
-  - price_change: "500.00"
-  - price_change_pct: "1.2"
-  - open: "41500.00"
-  - high: "42500.00"
-  - low: "41000.00"
-  - volume: "50000.00"
-  - quote_volume: "2000000000.00"
-  - trades_count: "18051"
-  - event_time: "1672515782136"
-  - updated_at: "1672515782200"
-TTL: 60 seconds
+3. Start all services:
+```bash
+docker-compose up -d
 ```
 
-### Late Data Handling
+4. Wait for services to initialize (approximately 2-3 minutes)
 
-The ticker consumer implements a hybrid watermark + per-symbol tracking strategy:
+5. Access the services:
+   - Airflow UI: http://localhost:8080 (admin/admin)
+   - Grafana: http://localhost:3000 (admin/admin)
+   - API Docs: http://localhost:8000/docs
+   - MinIO Console: http://localhost:9001 (minioadmin/minioadmin)
 
-1. **Watermark Check**: Rejects data older than 10 seconds (configurable)
-2. **Per-Symbol Tracking**: Ensures newer data is never overwritten by older data
-3. **Clock Skew Protection**: Rejects data from the future (> 5 seconds ahead)
+6. Enable the Airflow DAGs:
+   - `binance_connector_dag` - Start data ingestion
+   - `streaming_processing_dag` - Start stream processing
+   - `ticker_monitor_dag` - Enable health monitoring
 
-### Monitoring
+### Stopping Services
 
-The `ticker_monitor_dag` Airflow DAG monitors the ticker service:
-- Runs every 2 minutes
-- Checks Redis and Kafka health
-- Validates ticker data freshness
-- Alerts if > 50% of tickers are missing or stale
+```bash
+docker-compose down
+```
+
+To remove all data volumes:
+```bash
+docker-compose down -v
+```
+
+## API Endpoints
+
+### Market Data
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/market/realtime` | All real-time ticker data |
+| `GET /api/v1/market/summary` | Market summary statistics |
+| `GET /api/v1/market/ticker-health` | Ticker service health |
+| `GET /api/v1/market/top-by-trades` | Top symbols by trade count |
+| `GET /api/v1/market/top-by-volume` | Top symbols by volume |
+
+### Analytics
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/analytics/klines/{symbol}` | OHLCV candles (1m, 5m, 15m) |
+| `GET /api/v1/analytics/trades-count` | Trade count aggregations |
+
+### Alerts
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/analytics/alerts/whale-alerts` | Large trade alerts |
+
+### System
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/system/health` | System health status |
+| `GET /metrics` | Prometheus metrics |
+
+## Monitoring and Dashboards
+
+<!-- Add your dashboard screenshots here -->
+![Grafana Dashboard](docs/images/dashboard.png)
+
+### Pre-configured Dashboards
+
+1. **Market Overview**: Real-time prices, volumes, and market summary
+2. **Symbol Deep Dive**: Detailed analysis for individual trading pairs
+3. **Trading Analytics**: Trade patterns and anomaly alerts
+4. **System Health**: Infrastructure monitoring and service status
+
+### Metrics Collected
+
+- Message processing rates and latencies
+- Storage tier write success/failure rates
+- Kafka consumer lag
+- Redis memory usage
+- API request rates and response times
+
+## Airflow DAGs
+
+<!-- Add your DAG screenshots here -->
+![Airflow DAGs](docs/images/airflow-dags.png)
+
+| DAG | Schedule | Description |
+|-----|----------|-------------|
+| `binance_connector_dag` | Manual trigger | Runs WebSocket connector for data ingestion |
+| `streaming_processing_dag` | Every 5 minutes | Executes Spark streaming jobs |
+| `lifecycle_cleanup_dag` | Daily at 3 AM UTC | Data retention and compaction |
+| `ticker_monitor_dag` | Every 2 minutes | Health monitoring and alerting |
+
+## Configuration
+
+Key environment variables (see `.env.example` for full list):
+
+```bash
+# Kafka
+KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+
+# Redis (Hot Path)
+REDIS_HOST=redis
+REDIS_PORT=6379
+
+# PostgreSQL (Warm Path)
+POSTGRES_HOST=postgres-data
+POSTGRES_PORT=5432
+POSTGRES_USER=crypto
+POSTGRES_PASSWORD=crypto
+POSTGRES_DB=crypto_data
+
+# MinIO (Cold Path)
+MINIO_ENDPOINT=minio:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET=crypto-data
+
+# Trading Pairs
+TICKER_SYMBOLS=BTCUSDT,ETHUSDT,BNBUSDT,...
+```
+
+## Testing
+
+Run the test suite:
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run all tests
+pytest tests/
+
+# Run with coverage
+pytest tests/ --cov=src --cov-report=html
+```
+
+Test categories:
+- Unit tests for storage operations
+- Integration tests for API endpoints
+- Property-based tests using Hypothesis
+- End-to-end pipeline tests
+
+## Resource Requirements
+
+Minimum recommended resources for local development:
+
+| Service | Memory | CPU |
+|---------|--------|-----|
+| Kafka | 512MB | 0.5 |
+| Airflow Scheduler | 1.8GB | 2.5 |
+| Airflow Webserver | 512MB | 0.5 |
+| Redis | 100MB | - |
+| PostgreSQL (x2) | 256MB each | - |
+| MinIO | 256MB | - |
+| Grafana | 256MB | - |
+| Prometheus | 200MB | - |
+| Crypto API | 200MB | - |
+| Ticker Consumer | 256MB | - |
+
+Total: ~4.5GB RAM minimum
 
 ## License
 
-MIT
+This project is for educational and demonstration purposes.
+
+## Acknowledgments
+
+- Binance for providing the WebSocket API
+- Apache Software Foundation for Kafka, Spark, and Airflow

@@ -89,7 +89,7 @@ def create_mock_minio():
 
 
 def create_mock_ticker_storage():
-    """Create a mock RedisTickerStorage that returns empty results."""
+    """Create a mock RedisStorage that returns empty results."""
     mock = MagicMock()
     mock.ping.return_value = True
     mock.get_ticker.return_value = None
@@ -345,7 +345,7 @@ class TestQueryTierSelection:
         Feature: fastapi-backend, Property 4: Query tier selection based on time range
         Validates: Requirements 2.1
         """
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now()
         start = now - timedelta(minutes=offset_minutes)
         
         selected_tier = mock_query_router._select_tier(start)
@@ -359,7 +359,7 @@ class TestQueryTierSelection:
         Feature: fastapi-backend, Property 4: Query tier selection based on time range
         Validates: Requirements 2.1
         """
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now()
         start = now - timedelta(hours=offset_hours)
         
         selected_tier = mock_query_router._select_tier(start)
@@ -373,7 +373,7 @@ class TestQueryTierSelection:
         Feature: fastapi-backend, Property 4: Query tier selection based on time range
         Validates: Requirements 2.1
         """
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now()
         start = now - timedelta(days=offset_days)
         
         selected_tier = mock_query_router._select_tier(start)

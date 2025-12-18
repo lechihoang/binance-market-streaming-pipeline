@@ -258,7 +258,6 @@ minio_offset_days = st.integers(min_value=90, max_value=365 * 5)
 def mock_redis():
     """Create mock RedisStorage."""
     mock = MagicMock()
-    mock.get_indicators.return_value = None
     mock.get_aggregation.return_value = None
     mock.get_recent_trades.return_value = []
     mock.get_recent_alerts.return_value = []
@@ -269,7 +268,6 @@ def mock_redis():
 def mock_postgres():
     """Create mock PostgresStorage."""
     mock = MagicMock()
-    mock.query_indicators.return_value = []
     mock.query_candles.return_value = []
     mock.query_alerts.return_value = []
     return mock
@@ -379,7 +377,7 @@ symbol_strategy = st.sampled_from([
 price_strategy = st.floats(min_value=0.00001, max_value=1000000.0, allow_nan=False, allow_infinity=False)
 volume_strategy = st.floats(min_value=0.0, max_value=1000000000.0, allow_nan=False, allow_infinity=False)
 timestamp_strategy = st.integers(min_value=1600000000000, max_value=2000000000000)
-interval_strategy = st.sampled_from(["1m", "5m", "15m", "1h", "4h", "1d"])
+interval_strategy = st.sampled_from(["1m"])
 
 ticker_stats_strategy = st.fixed_dictionaries({
     "open": price_strategy,
@@ -388,18 +386,6 @@ ticker_stats_strategy = st.fixed_dictionaries({
     "close": price_strategy,
     "volume": volume_strategy,
     "quote_volume": volume_strategy,
-})
-
-indicators_strategy = st.fixed_dictionaries({
-    "rsi": st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False),
-    "macd": st.floats(min_value=-10000.0, max_value=10000.0, allow_nan=False, allow_infinity=False),
-    "macd_signal": st.floats(min_value=-10000.0, max_value=10000.0, allow_nan=False, allow_infinity=False),
-    "sma_20": price_strategy,
-    "ema_12": price_strategy,
-    "ema_26": price_strategy,
-    "bb_upper": price_strategy,
-    "bb_lower": price_strategy,
-    "atr": st.floats(min_value=0.0, max_value=10000.0, allow_nan=False, allow_infinity=False),
 })
 
 ohlcv_strategy = st.fixed_dictionaries({
@@ -436,31 +422,6 @@ def redis_storage():
     storage.client.flushdb()
     yield storage
     storage.client.flushdb()
-
-
-# ============================================================================
-# REDIS STORAGE PROPERTY TESTS
-# ============================================================================
-
-@skip_if_no_redis
-class TestRedisHashRoundTrip:
-    """Property tests for Redis hash round-trip consistency."""
-    
-    @given(symbol=symbol_strategy, indicators=indicators_strategy)
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_indicators_round_trip(self, redis_storage, symbol, indicators):
-        """
-        Feature: three-tier-storage, Property 1: Redis hash round-trip consistency
-        Validates: Requirements 1.4
-        """
-        redis_storage.write_indicators(symbol, indicators)
-        
-        result = redis_storage.get_indicators(symbol)
-        
-        assert result is not None
-        for key in indicators:
-            assert abs(result[key] - indicators[key]) < 1e-9
-
 
 
 

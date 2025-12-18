@@ -5,21 +5,22 @@ Aggregates raw trade data into OHLCV candles with multiple time windows.
 Reads from raw_trades Kafka topic, computes aggregations, and writes to
 multiple sinks (Kafka, Redis, Parquet).
 
-This is a self-contained job with inline logging, metrics, and memory monitoring.
+Inherits from BaseSparkJob for common functionality:
+- Logging setup with StructuredFormatter
+- Signal handling for graceful shutdown
+- SparkSession creation with consistent configuration
+- Memory monitoring and batch metrics
+- StorageWriter initialization for 3-tier storage
+- Cleanup logic
 """
 
-import logging
-import signal
-import sys
 import time
-from datetime import datetime
-from typing import Optional, Dict, Any
 
-from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql import DataFrame
 from pyspark.sql.functions import (
     col, window, count, sum as spark_sum, avg, min as spark_min, 
     max as spark_max, first, last, stddev, when, from_json, to_json, 
-    struct, date_format, lit, expr, current_timestamp
+    struct, lit
 )
 from pyspark.sql.types import (
     StructType, StructField, StringType, DoubleType, 
@@ -27,15 +28,7 @@ from pyspark.sql.types import (
 )
 
 from src.utils.config import Config
-from src.storage.redis import RedisConnector
-from src.utils.shutdown import GracefulShutdown
-from src.utils.logging import StructuredFormatter
-
-# Import storage tier classes for StorageWriter integration
-from src.storage.redis import RedisStorage
-from src.storage.postgres import PostgresStorage
-from src.storage.minio import MinioStorage
-from src.storage.storage_writer import StorageWriter
+from src.streaming.base_spark_job import BaseSparkJob
 
 # Import metrics utilities for production monitoring
 from src.utils.metrics import (
@@ -45,356 +38,31 @@ from src.utils.metrics import (
 )
 
 
-class TradeAggregationJob:
+class TradeAggregationJob(BaseSparkJob):
     """
     Spark Structured Streaming job for aggregating raw trades into OHLCV candles.
     
-    Processes trades from Kafka, creates tumbling windows (1m, 5m, 15m),
+    Processes trades from Kafka, creates 1-minute tumbling windows,
     computes aggregations and derived metrics, and writes to multiple sinks.
     
-    This is a self-contained job with inline:
+    Inherits from BaseSparkJob for common functionality:
     - SparkSession creation
     - Logging setup
     - Batch metrics logging
     - Memory monitoring
+    - Signal handling for graceful shutdown
+    - StorageWriter initialization
+    - Cleanup logic
     """
-    
+
     def __init__(self, config: Config):
         """
         Initialize Trade Aggregation Job.
         
         Args:
-            config: Configuration object with Kafka, Spark, Redis, DuckDB settings
+            config: Configuration object with Kafka, Spark, Redis, PostgreSQL, MinIO settings
         """
-        self.config = config
-        self.logger = self._setup_logging()
-        self.spark: Optional[SparkSession] = None
-        self.query: Optional[any] = None
-        self.shutdown_requested = False
-        self.storage_writer: Optional[StorageWriter] = None
-        
-        # Micro-batch auto-stop attributes
-        self.empty_batch_count: int = 0
-        self.empty_batch_threshold: int = 3  # Stop after 3 consecutive empty batches
-        self.max_runtime_seconds: int = 180  # 3 minutes per job (accounts for ~60s Spark startup)
-        self.start_time: Optional[float] = None
-        
-        # Initialize GracefulShutdown for controlled shutdown behavior
-        # Increased timeout to 60s to allow checkpoint completion before forced termination
-        self.graceful_shutdown = GracefulShutdown(
-            graceful_shutdown_timeout=60,
-            shutdown_progress_interval=10,
-            logger=self.logger
-        )
-        
-        # Register signal handlers for graceful shutdown
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
-    
-    def _setup_logging(self) -> logging.Logger:
-        """
-        Set up structured logging for this job.
-        
-        Returns:
-            Configured logger instance
-        """
-        job_name = "TradeAggregationJob"
-        numeric_level = getattr(logging, self.config.log_level.upper(), logging.INFO)
-        
-        # Create handler
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setLevel(numeric_level)
-        
-        # Set formatter
-        formatter = StructuredFormatter(job_name)
-        handler.setFormatter(formatter)
-        
-        # Get logger for this module
-        logger = logging.getLogger(__name__)
-        logger.setLevel(numeric_level)
-        logger.handlers.clear()
-        logger.addHandler(handler)
-        
-        return logger
-    
-    def _signal_handler(self, signum, frame):
-        """Handle shutdown signals with graceful shutdown support.
-        
-        IMPORTANT: We do NOT call query.stop() here immediately.
-        Instead, we set a flag and let the current batch complete naturally.
-        The query will be stopped after the batch finishes and checkpoint is committed.
-        This prevents offset loss due to incomplete checkpoint writes.
-        """
-        # Delegate to GracefulShutdown for proper shutdown handling
-        self.graceful_shutdown.request_shutdown(signum)
-        self.shutdown_requested = True
-        
-        # NOTE: Do NOT call query.stop() here!
-        # Let the current batch complete and checkpoint commit.
-        # The should_stop() method in write_to_sinks will stop the query
-        # after the batch completes, ensuring checkpoint is written.
-        self.logger.info("Shutdown signal received - will stop after current batch completes and checkpoint commits")
-    
-    def should_stop(self, is_empty_batch: bool) -> bool:
-        """
-        Check if job should stop based on shutdown signal, empty batch count or timeout.
-        
-        IMPORTANT: This is called INSIDE foreachBatch, so returning True here
-        and calling query.stop() will allow Spark to commit the checkpoint
-        for the current batch before stopping.
-        
-        Args:
-            is_empty_batch: Whether the current batch is empty
-            
-        Returns:
-            True if job should stop, False otherwise
-        """
-        # Check if shutdown was requested via signal (SIGTERM/SIGINT)
-        # This ensures we stop gracefully after the current batch completes
-        if self.shutdown_requested:
-            self.logger.info("Shutdown signal detected, stopping after this batch completes")
-            return True
-        
-        # Check timeout
-        if self.start_time and (time.time() - self.start_time) > self.max_runtime_seconds:
-            self.logger.info(f"Max runtime {self.max_runtime_seconds}s exceeded, stopping")
-            return True
-        
-        # Check empty batches
-        if is_empty_batch:
-            self.empty_batch_count += 1
-            self.logger.info(f"Empty batch detected, count: {self.empty_batch_count}/{self.empty_batch_threshold}")
-            if self.empty_batch_count >= self.empty_batch_threshold:
-                self.logger.info(f"{self.empty_batch_threshold} consecutive empty batches, stopping")
-                return True
-        else:
-            # Reset counter when data is received
-            if self.empty_batch_count > 0:
-                self.logger.info(f"Non-empty batch received, resetting empty batch counter from {self.empty_batch_count} to 0")
-            self.empty_batch_count = 0
-        
-        return False
-    
-    def _create_spark_session(self) -> SparkSession:
-        """
-        Create and configure SparkSession with resource limits.
-        
-        Memory config: executor=512m, driver=512m (Spark minimum ~450MB)
-        
-        Returns:
-            Configured SparkSession
-        """
-        # Spark requires minimum ~450MB for driver memory
-        executor_memory = "512m"
-        driver_memory = "512m"
-        
-        self.logger.info("Creating SparkSession with configuration:")
-        self.logger.info(f"  Executor memory: {executor_memory}")
-        self.logger.info(f"  Driver memory: {driver_memory}")
-        self.logger.info(f"  Executor cores: {self.config.spark.executor_cores}")
-        self.logger.info(f"  Shuffle partitions: {self.config.spark.shuffle_partitions}")
-        
-        spark = (SparkSession.builder
-                 .appName(self.config.spark.app_name)
-                 .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0")
-                 .config("spark.sql.caseSensitive", "true")  # Enable case-sensitive field names (e vs E, t vs T)
-                 .config("spark.executor.memory", executor_memory)
-                 .config("spark.driver.memory", driver_memory)
-                 .config("spark.executor.cores", str(self.config.spark.executor_cores))
-                 .config("spark.sql.shuffle.partitions", str(self.config.spark.shuffle_partitions))
-                 .config("spark.streaming.kafka.maxRatePerPartition", 
-                        str(self.config.kafka.max_rate_per_partition))
-                 .config("spark.streaming.backpressure.enabled", 
-                        str(self.config.spark.backpressure_enabled).lower())
-                 .config("spark.sql.streaming.checkpointLocation", 
-                        self.config.spark.checkpoint_location)
-                 # State store reliability settings
-                 # Retain more batches to prevent state file deletion during job restarts
-                 .config("spark.sql.streaming.minBatchesToRetain", 
-                        str(self.config.spark.state_store_min_batches_to_retain))
-                 # Increase maintenance interval to reduce cleanup frequency
-                 .config("spark.sql.streaming.stateStore.maintenanceInterval",
-                        self.config.spark.state_store_maintenance_interval)
-                 # Create snapshots more frequently to reduce delta file dependencies
-                 .config("spark.sql.streaming.stateStore.minDeltasForSnapshot", "5")
-                 .config("spark.sql.streaming.stateStore.stateSchemaCheck", "false")
-                 .getOrCreate())
-        
-        # Set log level
-        spark.sparkContext.setLogLevel(self.config.log_level)
-        
-        self.logger.info(f"SparkSession created: {spark.sparkContext.applicationId}")
-        self.logger.info(f"Checkpoint location: {self.config.spark.checkpoint_location}")
-        
-        return spark
-    
-    def _get_jvm_memory_metrics(self) -> Dict[str, Any]:
-        """
-        Get JVM memory metrics from Spark.
-        
-        Returns:
-            Dictionary with memory metrics in MB
-        """
-        try:
-            from pyspark import SparkContext
-            
-            sc = SparkContext.getOrCreate()
-            jvm = sc._jvm
-            runtime = jvm.java.lang.Runtime.getRuntime()
-            
-            max_memory = runtime.maxMemory() / (1024 * 1024)
-            total_memory = runtime.totalMemory() / (1024 * 1024)
-            free_memory = runtime.freeMemory() / (1024 * 1024)
-            used_memory = total_memory - free_memory
-            
-            usage_pct = (used_memory / max_memory) * 100 if max_memory > 0 else 0
-            
-            return {
-                "heap_used_mb": round(used_memory, 2),
-                "heap_max_mb": round(max_memory, 2),
-                "heap_usage_pct": round(usage_pct, 2),
-                "heap_free_mb": round(free_memory, 2),
-                "heap_total_mb": round(total_memory, 2),
-            }
-        except Exception as e:
-            return {
-                "heap_used_mb": 0,
-                "heap_max_mb": 0,
-                "heap_usage_pct": 0,
-                "heap_free_mb": 0,
-                "heap_total_mb": 0,
-                "error": str(e)
-            }
-    
-    def _log_memory_metrics(self, batch_id: Optional[int] = None, alert_threshold_pct: float = 80.0) -> None:
-        """
-        Log JVM memory metrics and alert if usage is high.
-        
-        Args:
-            batch_id: Optional batch identifier
-            alert_threshold_pct: Percentage threshold for high memory alert
-        """
-        metrics = self._get_jvm_memory_metrics()
-        
-        if "error" in metrics:
-            self.logger.warning(f"Failed to get memory metrics: {metrics['error']}")
-            return
-        
-        batch_str = f"Batch {batch_id}: " if batch_id is not None else ""
-        
-        self.logger.info(
-            f"{batch_str}Memory usage: "
-            f"{metrics['heap_used_mb']:.0f}MB / {metrics['heap_max_mb']:.0f}MB "
-            f"({metrics['heap_usage_pct']:.1f}%), "
-            f"free={metrics['heap_free_mb']:.0f}MB"
-        )
-        
-        if metrics['heap_usage_pct'] >= alert_threshold_pct:
-            self.logger.warning(
-                f"{batch_str}HIGH MEMORY USAGE ALERT: "
-                f"{metrics['heap_usage_pct']:.1f}% "
-                f"(threshold: {alert_threshold_pct}%) - "
-                f"Used: {metrics['heap_used_mb']:.0f}MB / {metrics['heap_max_mb']:.0f}MB"
-            )
-    
-    def _log_batch_metrics(
-        self,
-        batch_id: int,
-        duration_seconds: float,
-        record_count: int,
-        watermark: Optional[str] = None
-    ) -> None:
-        """
-        Log batch processing metrics.
-        
-        Args:
-            batch_id: Batch identifier
-            duration_seconds: Processing duration in seconds
-            record_count: Number of records processed
-            watermark: Current watermark timestamp
-        """
-        watermark_str = f", watermark={watermark}" if watermark else ""
-        self.logger.info(
-            f"Batch {batch_id} completed: "
-            f"duration={duration_seconds:.2f}s, "
-            f"records={record_count}{watermark_str}"
-        )
-    
-    def _log_processing_metrics(
-        self,
-        batch_id: int,
-        checkpoint_location: str,
-        processing_time_seconds: float,
-        record_count: int,
-        watermark: Optional[str] = None
-    ) -> None:
-        """
-        Log comprehensive processing metrics including checkpoint location.
-        
-        Args:
-            batch_id: Batch identifier
-            checkpoint_location: Path to checkpoint directory
-            processing_time_seconds: Processing duration in seconds
-            record_count: Number of records processed
-            watermark: Current watermark timestamp
-        """
-        watermark_str = f", watermark={watermark}" if watermark else ""
-        
-        self.logger.info(
-            f"Processing metrics - Batch {batch_id}: "
-            f"checkpoint={checkpoint_location}, "
-            f"processing_time={processing_time_seconds:.2f}s, "
-            f"record_count={record_count}{watermark_str}"
-        )
-
-    def _init_storage_writer(self) -> StorageWriter:
-        """
-        Initialize StorageWriter with all 3 storage tiers.
-        
-        Uses PostgresStorage for warm path (concurrent write support)
-        and MinioStorage for cold path (S3-compatible object storage).
-        
-        Returns:
-            Configured StorageWriter instance
-        """
-        self.logger.info("Initializing StorageWriter with 3-tier storage (Redis, PostgreSQL, MinIO)")
-        
-        # Initialize Redis storage (hot path)
-        redis_storage = RedisStorage(
-            host=self.config.redis.host,
-            port=self.config.redis.port,
-            db=self.config.redis.db
-        )
-        
-        # Initialize PostgreSQL storage (warm path - supports concurrent writes)
-        postgres_storage = PostgresStorage(
-            host=self.config.postgres.host,
-            port=self.config.postgres.port,
-            user=self.config.postgres.user,
-            password=self.config.postgres.password,
-            database=self.config.postgres.database,
-            max_retries=self.config.postgres.max_retries,
-            retry_delay=self.config.postgres.retry_delay
-        )
-        
-        # Initialize MinIO storage (cold path - S3-compatible object storage)
-        minio_storage = MinioStorage(
-            endpoint=self.config.minio.endpoint,
-            access_key=self.config.minio.access_key,
-            secret_key=self.config.minio.secret_key,
-            bucket=self.config.minio.bucket,
-            secure=self.config.minio.secure,
-            max_retries=self.config.minio.max_retries
-        )
-        
-        storage_writer = StorageWriter(
-            redis=redis_storage,
-            postgres=postgres_storage,
-            minio=minio_storage
-        )
-        
-        self.logger.info("StorageWriter initialized successfully with PostgreSQL and MinIO")
-        return storage_writer
+        super().__init__(config, job_name="TradeAggregationJob")
 
     def create_stream_reader(self) -> DataFrame:
         """
@@ -475,7 +143,7 @@ class TradeAggregationJob:
                 col("timestamp").alias("kafka_timestamp")
             )
             
-            # Extract fields and convert event_time to timestamp
+            # Extract fields, convert event_time to timestamp, and add watermark
             # Use getField() to avoid case-insensitive ambiguity between 'E' and 'e'
             original_data_col = col("trade").getField("original_data")
             extracted_df = parsed_df.select(
@@ -488,65 +156,48 @@ class TradeAggregationJob:
                 col("topic"),
                 col("partition"),
                 col("offset")
-            )
-            
-            # Add watermark for late event handling (1 minute)
-            watermarked_df = extracted_df.withWatermark("event_time", "1 minute")
+            ).withWatermark("event_time", "1 minute")
             
             self.logger.info("Trade parsing configured with 1 minute watermark")
-            return watermarked_df
+            return extracted_df
             
         except Exception as e:
             self.logger.error(f"Failed to parse trades: {str(e)}", 
                             extra={"error": str(e)})
             raise
-    
-    def aggregate_windows(self, df: DataFrame) -> DataFrame:
+
+    def aggregate_trades(self, df: DataFrame) -> DataFrame:
         """
-        Create tumbling window aggregations for multiple time windows.
+        Create 1-minute OHLCV candles with derived metrics from parsed trades.
         
         Args:
             df: Parsed trades DataFrame with watermark
             
         Returns:
-            DataFrame with OHLCV aggregations for 1m, 5m, 15m windows
+            DataFrame with OHLCV aggregations and derived metrics (VWAP, price_change_pct, buy_sell_ratio)
         """
-        self.logger.info("Creating window aggregations: 1m, 5m, 15m")
-        
-        # Define window durations
-        window_durations = ["1 minute", "5 minutes", "15 minutes"]
-        window_labels = ["1m", "5m", "15m"]
-        
-        aggregated_dfs = []
-        
-        for duration, label in zip(window_durations, window_labels):
-            # Create tumbling window and group by symbol
-            windowed_df = (df
-                          .groupBy(
-                              window(col("event_time"), duration).alias("window"),
-                              col("symbol")
-                          )
-                          .agg(
-                              # Basic aggregations
-                              count("*").alias("trade_count"),
-                              spark_sum("quantity").alias("volume"),
-                              spark_sum(col("price") * col("quantity")).alias("quote_volume"),
-                              avg("price").alias("avg_price"),
-                              spark_min("price").alias("low"),
-                              spark_max("price").alias("high"),
-                              first("price").alias("open"),
-                              last("price").alias("close"),
-                              stddev("price").alias("price_stddev"),
-                              # Buy/sell counts
-                              spark_sum(when(col("is_buyer_maker") == False, 1).otherwise(0)).alias("buy_count"),
-                              spark_sum(when(col("is_buyer_maker") == True, 1).otherwise(0)).alias("sell_count")
-                          ))
-            
-            # Extract window start and end, add window duration label
-            windowed_df = windowed_df.select(
+        return (df
+            .groupBy(
+                window(col("event_time"), "1 minute").alias("window"),
+                col("symbol")
+            )
+            .agg(
+                count("*").alias("trade_count"),
+                spark_sum("quantity").alias("volume"),
+                spark_sum(col("price") * col("quantity")).alias("quote_volume"),
+                avg("price").alias("avg_price"),
+                spark_min("price").alias("low"),
+                spark_max("price").alias("high"),
+                first("price").alias("open"),
+                last("price").alias("close"),
+                stddev("price").alias("price_stddev"),
+                spark_sum(when(col("is_buyer_maker") == False, 1).otherwise(0)).alias("buy_count"),
+                spark_sum(when(col("is_buyer_maker") == True, 1).otherwise(0)).alias("sell_count")
+            )
+            .select(
                 col("window.start").alias("window_start"),
                 col("window.end").alias("window_end"),
-                lit(label).alias("window_duration"),
+                lit("1m").alias("window_duration"),
                 col("symbol"),
                 col("open"),
                 col("high"),
@@ -560,98 +211,35 @@ class TradeAggregationJob:
                 col("buy_count"),
                 col("sell_count")
             )
-            
-            aggregated_dfs.append(windowed_df)
-        
-        # Union all window aggregations
-        result_df = aggregated_dfs[0]
-        for agg_df in aggregated_dfs[1:]:
-            result_df = result_df.union(agg_df)
-        
-        self.logger.info("Window aggregations created successfully")
-        return result_df
-    
-    def compute_derived_metrics(self, df: DataFrame) -> DataFrame:
-        """
-        Compute derived metrics from aggregated data.
-        
-        Args:
-            df: Aggregated OHLCV DataFrame
-            
-        Returns:
-            DataFrame with additional derived metrics
-        """
-        self.logger.info("Computing derived metrics: VWAP, price_change_pct, buy_sell_ratio, large_order_count")
-        
-        # Define large order threshold (can be made configurable)
-        large_order_threshold = 10.0
-        
-        result_df = df.withColumn(
-            "vwap",
-            col("quote_volume") / col("volume")
-        ).withColumn(
-            "price_change_pct",
-            ((col("close") - col("open")) / col("open")) * 100
-        ).withColumn(
-            "buy_sell_ratio",
-            when(col("sell_count") > 0, col("buy_count") / col("sell_count")).otherwise(lit(None))
-        ).withColumn(
-            "large_order_count",
-            lit(0)  # Placeholder - would need per-trade data to compute accurately
+            # Derived metrics
+            .withColumn("vwap", col("quote_volume") / col("volume"))
+            .withColumn("price_change_pct", ((col("close") - col("open")) / col("open")) * 100)
+            .withColumn("buy_sell_ratio", when(col("sell_count") > 0, col("buy_count") / col("sell_count")).otherwise(lit(None)))
         )
-        
-        self.logger.info("Derived metrics computed successfully")
-        return result_df
 
-    
     def write_to_sinks(self, batch_df: DataFrame, batch_id: int) -> None:
         """
         Write batch to multiple sinks using StorageWriter for 3-tier storage.
         
         Writes to:
         - Kafka (for downstream consumers)
-        - Redis, DuckDB, Parquet (via StorageWriter for 3-tier storage)
+        - Redis, PostgreSQL, MinIO (via StorageWriter for 3-tier storage)
         
-        Supports graceful shutdown:
-        - Checks should_skip_batch() at start to skip if shutdown requested
-        - Marks batch start/end for tracking
-        - Completes all writes even if shutdown requested mid-batch
+        If shutdown is requested during processing, raises exception to prevent
+        Spark from committing offset. Batch will be replayed on restart.
         
         Args:
             batch_df: Batch DataFrame to write
             batch_id: Batch identifier
         """
-        try:
-            # Check if batch should be skipped due to shutdown request (Requirement 5.2)
-            if self.graceful_shutdown.should_skip_batch():
-                self.logger.info(f"Batch {batch_id}: Skipping due to shutdown request")
-                return
-            
-            # Track batch processing latency using utils metrics
-            with track_latency("spark_trade_aggregation", "batch_processing"):
-                self._write_to_sinks_impl(batch_df, batch_id)
-                
-        except Exception as e:
-            # Record error metric for batch processing failure
-            record_error(
-                service="spark_trade_aggregation",
-                error_type="batch_processing_error",
-                severity="error"
-            )
-            self.logger.error(f"Batch {batch_id}: Error in write_to_sinks: {str(e)}", exc_info=True)
-            # Ensure batch is marked as ended even on error (Requirement 5.3)
-            self.graceful_shutdown.mark_batch_end(batch_id)
-    
-    def _write_to_sinks_impl(self, batch_df: DataFrame, batch_id: int) -> None:
-        """Internal implementation of write_to_sinks with metrics tracking."""
         start_time = time.time()
         
-        self.logger.info(f"write_to_sinks called for batch {batch_id}")
+        # Check shutdown before starting
+        if self.graceful_shutdown.shutdown_requested:
+            self.logger.info(f"Batch {batch_id}: Aborting due to shutdown request")
+            raise InterruptedError("Shutdown requested, aborting batch to prevent offset commit")
         
-        # Log memory usage at start of batch (inline)
-        self._log_memory_metrics(batch_id=batch_id, alert_threshold_pct=80.0)
-        
-        # Check if batch is empty and determine if we should stop
+        # Check if batch is empty
         is_empty = batch_df.isEmpty()
         
         if self.should_stop(is_empty):
@@ -664,8 +252,8 @@ class TradeAggregationJob:
             self.logger.info(f"Batch {batch_id} is EMPTY, skipping writes")
             return
         
-        # Mark batch as started for graceful shutdown tracking (Requirement 5.1)
-        self.graceful_shutdown.mark_batch_start(batch_id)
+        # Log memory usage
+        self._log_memory_metrics(batch_id=batch_id, alert_threshold_pct=80.0)
         
         # Collect data for writing
         records = batch_df.collect()
@@ -673,7 +261,12 @@ class TradeAggregationJob:
         
         self.logger.info(f"Writing batch {batch_id} with {record_count} records to sinks")
         
-        # Write to Kafka (for downstream consumers like Technical Indicators job)
+        # Check shutdown again after collect (can be slow)
+        if self.graceful_shutdown.shutdown_requested:
+            self.logger.info(f"Batch {batch_id}: Aborting after collect due to shutdown")
+            raise InterruptedError("Shutdown requested, aborting batch to prevent offset commit")
+        
+        # Write to Kafka
         try:
             kafka_df = batch_df.select(
                 col("symbol").cast("string").alias("key"),
@@ -694,13 +287,9 @@ class TradeAggregationJob:
         except Exception as e:
             self.logger.error(f"Batch {batch_id}: Failed to write to Kafka: {str(e)}")
         
-        # Write to 3-tier storage using StorageWriter batch method (Redis, PostgreSQL, MinIO)
-        # Per Requirements 1.2, 1.3, 1.4, 2.1: Batch writes with parallel execution
-        
-        # Collect all records first, then call batch method
-        aggregation_records = []
-        for row in records:
-            aggregation_data = {
+        # Write to 3-tier storage
+        aggregation_records = [
+            {
                 'timestamp': row.window_start,
                 'symbol': row.symbol,
                 'interval': row.window_duration,
@@ -711,21 +300,21 @@ class TradeAggregationJob:
                 'volume': float(row.volume) if row.volume else None,
                 'quote_volume': float(row.quote_volume) if hasattr(row, 'quote_volume') and row.quote_volume else 0,
                 'trades_count': int(row.trade_count) if hasattr(row, 'trade_count') and row.trade_count else 0,
+                'buy_count': int(row.buy_count) if hasattr(row, 'buy_count') and row.buy_count is not None else 0,
+                'sell_count': int(row.sell_count) if hasattr(row, 'sell_count') and row.sell_count is not None else 0,
             }
-            aggregation_records.append(aggregation_data)
+            for row in records
+        ]
         
-        # Write all records to all 3 tiers via StorageWriter batch method
         batch_result = self.storage_writer.write_aggregations_batch(aggregation_records)
-        success_count = batch_result.success_count
-        failure_count = batch_result.failure_count
         
         # Log tier-level results
         for tier, succeeded in batch_result.tier_results.items():
             if not succeeded:
                 self.logger.warning(f"Batch {batch_id}: {tier} tier write failed")
         
-        # Record message processed metrics for successful writes
-        for _ in range(success_count):
+        # Record metrics
+        for _ in range(batch_result.success_count):
             record_message_processed(
                 service="spark_trade_aggregation",
                 topic="processed_aggregations",
@@ -734,32 +323,18 @@ class TradeAggregationJob:
         
         self.logger.info(
             f"Batch {batch_id}: StorageWriter completed - "
-            f"{success_count} succeeded, {failure_count} failed"
+            f"{batch_result.success_count} succeeded, {batch_result.failure_count} failed"
         )
         
-        # Log batch metrics (inline)
+        # Log processing metrics
         duration = time.time() - start_time
+        watermark = str(records[0].window_start) if records and hasattr(records[0], 'window_start') else None
+        watermark_str = f", watermark={watermark}" if watermark else ""
         
-        # Get watermark from batch if available
-        watermark = None
-        try:
-            if records:
-                watermark = str(records[0].window_start) if hasattr(records[0], 'window_start') else None
-        except:
-            pass
-        
-        # Log comprehensive processing metrics (inline)
-        self._log_processing_metrics(
-            batch_id,
-            self.config.spark.checkpoint_location,
-            duration,
-            record_count,
-            watermark
+        self.logger.info(
+            f"Batch {batch_id}: processed {record_count} records in {duration:.2f}s{watermark_str}"
         )
-        
-        # Mark batch as completed for graceful shutdown tracking (Requirement 5.1)
-        self.graceful_shutdown.mark_batch_end(batch_id)
-    
+
     def run(self) -> None:
         """
         Run the Trade Aggregation streaming job.
@@ -772,23 +347,18 @@ class TradeAggregationJob:
         - empty_batch_threshold consecutive empty batches are received (default 3)
         """
         try:
-            # Create Spark session
+            # Create Spark session (using inherited method)
             self.spark = self._create_spark_session()
             
-            # Initialize StorageWriter for 3-tier storage (Redis, DuckDB, Parquet)
+            # Initialize StorageWriter for 3-tier storage (using inherited method)
             self.storage_writer = self._init_storage_writer()
             
             # Create stream reader
             raw_stream = self.create_stream_reader()
             
-            # Parse trades
+            # Parse trades and aggregate into 1-minute candles
             trades_df = self.parse_trades(raw_stream)
-            
-            # Aggregate windows
-            aggregated_df = self.aggregate_windows(trades_df)
-            
-            # Compute derived metrics
-            enriched_df = self.compute_derived_metrics(aggregated_df)
+            enriched_df = self.aggregate_trades(trades_df)
             
             # Track start time for timeout-based auto-stop
             self.start_time = time.time()
@@ -814,27 +384,11 @@ class TradeAggregationJob:
             
             # Use awaitTermination with timeout for micro-batch processing
             # The query will also stop if should_stop() returns True in write_to_sinks
-            # IMPORTANT: awaitTermination returns when query stops, but checkpoint
-            # may still be committing. We need to wait for that to complete.
+            # If shutdown requested during batch, exception is raised and offset not committed
             query.awaitTermination(timeout=self.max_runtime_seconds)
             
-            # Wait for any in-progress batch to complete (Requirement 1.3, 1.4)
-            was_graceful = self.graceful_shutdown.wait_for_batch_completion()
-            
-            # CRITICAL: Wait a bit for Spark to commit checkpoint after query stops
-            # Spark commits checkpoint AFTER foreachBatch returns, so we need to
-            # give it time to write the checkpoint before we stop SparkSession
-            if self.query and not self.query.isActive:
-                self.logger.info("Query stopped, waiting for checkpoint commit...")
-                time.sleep(5)  # Give Spark time to commit checkpoint
-                self.logger.info("Checkpoint commit wait completed")
-            
-            # Log whether shutdown was graceful or forced (Requirement 3.3)
             if self.graceful_shutdown.shutdown_requested:
-                if was_graceful:
-                    self.logger.info("Trade Aggregation Job shutdown completed gracefully")
-                else:
-                    self.logger.warning("Trade Aggregation Job shutdown was forced due to timeout")
+                self.logger.info("Trade Aggregation Job shutdown - incomplete batch will replay on restart")
             else:
                 self.logger.info("Trade Aggregation Job completed successfully")
             
@@ -850,21 +404,8 @@ class TradeAggregationJob:
                             exc_info=True)
             raise
         finally:
+            # Use inherited cleanup method
             self._cleanup()
-    
-    def _cleanup(self):
-        """Clean up resources on shutdown."""
-        self.logger.info("Starting cleanup...")
-        
-        if self.query and self.query.isActive:
-            self.logger.info("Stopping streaming query...")
-            self.query.stop()
-        
-        if self.spark:
-            self.logger.info("Stopping SparkSession...")
-            self.spark.stop()
-        
-        self.logger.info("Cleanup completed. Shutdown successful.")
 
 
 def main():

@@ -585,28 +585,28 @@ class TestAnomalyTypeCoverage:
 
 
 # ============================================================================
-# REDIS CONNECTOR TESTS
+# REDIS STORAGE TESTS
 # ============================================================================
 
-class TestRedisConnector:
-    """Test Redis connector operations."""
+class TestRedisStorage:
+    """Test Redis storage operations."""
     
     @patch('redis.Redis')
     @patch('redis.ConnectionPool')
     def test_redis_write_hash_success(self, mock_pool, mock_redis):
         """Test Redis write with hash type."""
-        from src.storage.redis import RedisConnector
+        from src.storage.redis import RedisStorage
         
         mock_client = Mock()
         mock_redis.return_value = mock_client
         mock_client.ping.return_value = True
         
-        connector = RedisConnector(host="localhost", port=6379)
-        connector.write_to_redis(
+        storage = RedisStorage(host="localhost", port=6379)
+        storage.write_to_redis(
             key="test:key",
             value={"field1": "value1", "field2": "value2"},
-            ttl_seconds=3600,
-            value_type="hash"
+            ttl=3600,
+            data_type="hash"
         )
         
         mock_client.hset.assert_called_once_with(
@@ -619,37 +619,38 @@ class TestRedisConnector:
     @patch('redis.ConnectionPool')
     def test_redis_write_list_success(self, mock_pool, mock_redis):
         """Test Redis write with list type."""
-        from src.storage.redis import RedisConnector
+        from src.storage.redis import RedisStorage
         
         mock_client = Mock()
         mock_redis.return_value = mock_client
         mock_client.ping.return_value = True
+        mock_pipeline = Mock()
+        mock_client.pipeline.return_value = mock_pipeline
         
-        connector = RedisConnector(host="localhost", port=6379)
-        connector.write_to_redis(
+        storage = RedisStorage(host="localhost", port=6379)
+        storage.write_to_redis(
             key="test:list",
-            value={"alert": "data"},
-            value_type="list",
-            list_max_size=1000
+            value=[{"alert": "data"}],
+            data_type="list"
         )
         
-        mock_client.lpush.assert_called_once()
-        mock_client.ltrim.assert_called_once_with("test:list", 0, 999)
+        # RedisStorage uses pipeline with delete + rpush for list writes
+        mock_client.pipeline.assert_called_once()
+        mock_pipeline.delete.assert_called_once_with("test:list")
+        mock_pipeline.execute.assert_called_once()
     
     @patch('redis.Redis')
     @patch('redis.ConnectionPool')
     def test_redis_connection_failure(self, mock_pool, mock_redis):
         """Test Redis connection failure handling."""
-        from src.storage.redis import RedisConnector
+        from src.storage.redis import RedisStorage
         
         mock_client = Mock()
         mock_redis.return_value = mock_client
         mock_client.ping.side_effect = Exception("Connection refused")
         
-        connector = RedisConnector(host="localhost", port=6379)
-        
         with pytest.raises(Exception) as exc_info:
-            _ = connector.client
+            storage = RedisStorage(host="localhost", port=6379)
         
         assert "Connection refused" in str(exc_info.value)
 

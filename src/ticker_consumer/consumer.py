@@ -138,7 +138,7 @@ class TickerConsumer:
     """Core ticker consumer service."""
     
     def __init__(self, config: TickerConfig):
-        from src.storage.redis import RedisTickerStorage
+        from src.storage.redis import RedisStorage
         
         self.config = config
         self._configured_symbols = set(s.upper() for s in config.symbols)
@@ -148,7 +148,7 @@ class TickerConsumer:
         )
         self._backoff = ExponentialBackoff(initial_delay_ms=1000, max_delay_ms=60000)
         
-        self._redis: Optional["RedisTickerStorage"] = None
+        self._redis: Optional["RedisStorage"] = None
         self._kafka = None
         self._shutdown = False
         self._validate = validate_ticker
@@ -157,9 +157,9 @@ class TickerConsumer:
     
     def _init_redis(self) -> None:
         """Initialize Redis connection."""
-        from src.storage.redis import RedisTickerStorage
+        from src.storage.redis import RedisStorage
         
-        self._redis = RedisTickerStorage(
+        self._redis = RedisStorage(
             host=self.config.redis_host,
             port=self.config.redis_port,
             db=self.config.redis_db,
@@ -312,10 +312,10 @@ def health_check_main() -> int:
     Returns 0 if Redis is reachable, 1 otherwise.
     """
     try:
-        from src.storage.redis import RedisTickerStorage
+        from src.storage.redis import RedisStorage
         
         config = TickerConfig.from_env()
-        redis = RedisTickerStorage(
+        redis = RedisStorage(
             host=config.redis_host,
             port=config.redis_port,
             db=config.redis_db,

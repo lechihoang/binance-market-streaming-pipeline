@@ -20,7 +20,7 @@ import sys
 
 sys.path.insert(0, '/opt/airflow')
 
-from cleanup_utils import cleanup_connector_resources
+from src.utils.cleanup import cleanup_connector_resources
 
 default_args = {
     'owner': 'data-engineering',

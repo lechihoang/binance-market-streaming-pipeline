@@ -7,6 +7,7 @@ Path format: {bucket}/{data_type}/symbol={symbol}/date={YYYY-MM-DD}/data.parquet
 
 import io
 import json
+import re
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -271,6 +272,48 @@ class MinioStorage:
             f"batch_{int(time.time() * 1000)}.parquet"
         )
 
+    def parse_date_from_path(self, object_path: str) -> Optional[datetime]:
+        """Extract date from partition path.
+        
+        Handles two partition formats:
+        1. date={YYYY-MM-DD} (e.g., "klines/symbol=BTCUSDT/date=2024-01-15/data.parquet")
+        2. year={YYYY}/month={MM}/day={DD} (e.g., "klines/symbol=BTCUSDT/year=2024/month=01/day=15/batch_123.parquet")
+        
+        Args:
+            object_path: The MinIO object path to parse
+            
+        Returns:
+            datetime object representing the date, or None if path is invalid
+            
+        Requirements: 3.2
+        """
+        if not object_path or not isinstance(object_path, str):
+            return None
+        
+        # Try format 1: date={YYYY-MM-DD}
+        date_match = re.search(r'date=(\d{4}-\d{2}-\d{2})', object_path)
+        if date_match:
+            try:
+                return datetime.strptime(date_match.group(1), "%Y-%m-%d")
+            except ValueError:
+                return None
+        
+        # Try format 2: year={YYYY}/month={MM}/day={DD}
+        year_match = re.search(r'year=(\d{4})', object_path)
+        month_match = re.search(r'month=(\d{1,2})', object_path)
+        day_match = re.search(r'day=(\d{1,2})', object_path)
+        
+        if year_match and month_match and day_match:
+            try:
+                year = int(year_match.group(1))
+                month = int(month_match.group(1))
+                day = int(day_match.group(1))
+                return datetime(year, month, day)
+            except ValueError:
+                return None
+        
+        return None
+
     def write_klines_batch(
         self, records: List[Dict[str, Any]], write_date: Optional[datetime] = None
     ) -> Tuple[int, List[str]]:
@@ -409,6 +452,81 @@ class MinioStorage:
         all_records.sort(key=lambda x: x['timestamp'])
         return all_records
 
+    def read_klines_aggregated(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        interval: str = "5m"
+    ) -> List[Dict[str, Any]]:
+        """Read 1m klines and aggregate to higher timeframes using Pandas.
+        
+        Reads 1-minute candles from MinIO storage and aggregates them into
+        higher timeframe candles (5m, 15m) using Pandas resample.
+        
+        Args:
+            symbol: Trading symbol (e.g., "BTCUSDT")
+            start: Start datetime for the query
+            end: End datetime for the query
+            interval: Target interval ("1m", "5m", or "15m")
+            
+        Returns:
+            List of aggregated kline dicts with OHLCV data
+            
+        Requirements: 2.3, 2.4
+        """
+        import pandas as pd
+        
+        # Read 1m data using existing method
+        records = self.read_klines(symbol, start, end)
+        
+        # Return as-is for 1m interval or empty data
+        if not records or interval == "1m":
+            return records
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(records)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df = df.set_index('timestamp')
+        
+        # Map interval to pandas frequency
+        freq_map = {"5m": "5min", "15m": "15min"}
+        freq = freq_map.get(interval)
+        
+        if freq is None:
+            logger.warning(f"Invalid interval '{interval}', returning 1m data")
+            return records
+        
+        # Aggregate using resample with proper OHLCV logic
+        # - open: first value in window
+        # - high: max value in window
+        # - low: min value in window
+        # - close: last value in window
+        # - volume/quote_volume/trades_count: sum of values in window
+        agg_df = df.resample(freq).agg({
+            'symbol': 'first',
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum',
+            'quote_volume': 'sum',
+            'trades_count': 'sum'
+        }).dropna()
+        
+        # Reset index to get timestamp as column
+        agg_df = agg_df.reset_index()
+        
+        # Convert back to list of dicts
+        result = agg_df.to_dict('records')
+        
+        logger.debug(
+            f"Aggregated {len(records)} 1m candles to {len(result)} {interval} candles "
+            f"for {symbol}"
+        )
+        
+        return result
+
     def read_indicators(self, symbol: str, start: datetime, end: datetime) -> List[Dict[str, Any]]:
         """Read indicators from date-partitioned Parquet files."""
         all_records = []
@@ -463,6 +581,339 @@ class MinioStorage:
         
         all_records.sort(key=lambda x: x['timestamp'])
         return all_records
+
+    # ==================== Compaction Methods ====================
+
+    def _get_partition_prefix(self, data_type: str, symbol: str, date: datetime) -> str:
+        """Generate partition prefix for batch files.
+        
+        Args:
+            data_type: Type of data (klines, indicators, alerts)
+            symbol: Trading symbol
+            date: Date for the partition
+            
+        Returns:
+            Partition prefix path
+        """
+        return (
+            f"{data_type}/symbol={symbol}/"
+            f"year={date.year}/month={date.month:02d}/day={date.day:02d}/"
+        )
+
+    def _get_schema_for_data_type(self, data_type: str) -> pa.Schema:
+        """Get the PyArrow schema for a given data type.
+        
+        Args:
+            data_type: Type of data (klines, indicators, alerts)
+            
+        Returns:
+            PyArrow schema for the data type
+        """
+        schemas = {
+            "klines": self.KLINES_SCHEMA,
+            "indicators": self.INDICATORS_SCHEMA,
+            "alerts": self.ALERTS_SCHEMA,
+        }
+        return schemas.get(data_type, self.KLINES_SCHEMA)
+
+    def compact_partition(
+        self, data_type: str, symbol: str, date: datetime
+    ) -> Dict[str, Any]:
+        """Compact all batch files in a partition into a single consolidated file.
+        
+        Reads all batch_*.parquet files in the partition, merges them into a
+        single consolidated file, and deletes the original batch files only
+        on success.
+        
+        Args:
+            data_type: Type of data (klines, indicators, alerts)
+            symbol: Trading symbol
+            date: Date of the partition to compact
+            
+        Returns:
+            Dict with compaction results:
+                - files_merged: Number of files merged
+                - files_deleted: Number of original files deleted
+                - bytes_before: Total bytes before compaction
+                - bytes_after: Total bytes after compaction
+                - success: Whether compaction succeeded
+                - error: Error message if failed
+                
+        Requirements: 1.1, 1.2, 1.3, 1.4
+        """
+        result = {
+            "files_merged": 0,
+            "files_deleted": 0,
+            "bytes_before": 0,
+            "bytes_after": 0,
+            "success": False,
+            "error": None,
+        }
+        
+        partition_prefix = self._get_partition_prefix(data_type, symbol, date)
+        batch_files: List[Tuple[str, int]] = []  # (object_name, size)
+        
+        try:
+            # List all batch files in the partition
+            objects = self._client.list_objects(
+                self.bucket, prefix=partition_prefix, recursive=False
+            )
+            
+            for obj in objects:
+                if "/batch_" in obj.object_name and obj.object_name.endswith(".parquet"):
+                    batch_files.append((obj.object_name, obj.size or 0))
+                    result["bytes_before"] += obj.size or 0
+            
+            if len(batch_files) < 2:
+                # Nothing to compact
+                result["success"] = True
+                logger.debug(
+                    f"Partition {partition_prefix} has {len(batch_files)} files, "
+                    "skipping compaction"
+                )
+                return result
+            
+            result["files_merged"] = len(batch_files)
+            logger.info(
+                f"Compacting {len(batch_files)} batch files in {partition_prefix}"
+            )
+            
+            # Read all batch files and merge
+            tables: List[pa.Table] = []
+            for object_name, _ in batch_files:
+                table = self._read_parquet_from_minio(object_name)
+                if table is not None:
+                    tables.append(table)
+            
+            if not tables:
+                result["error"] = "No valid tables found in batch files"
+                logger.error(f"No valid tables found in {partition_prefix}")
+                return result
+            
+            # Concatenate all tables
+            merged_table = pa.concat_tables(tables)
+            
+            # Check for existing consolidated file and append if present
+            consolidated_path = f"{partition_prefix}data.parquet"
+            existing_table = self._read_parquet_from_minio(consolidated_path)
+            
+            if existing_table is not None:
+                # Append to existing consolidated file (Requirement 1.4)
+                merged_table = pa.concat_tables([existing_table, merged_table])
+                logger.debug(
+                    f"Appending to existing consolidated file at {consolidated_path}"
+                )
+            
+            # Write consolidated file
+            if not self._write_parquet_to_minio(merged_table, consolidated_path):
+                result["error"] = "Failed to write consolidated file"
+                logger.error(f"Failed to write consolidated file to {consolidated_path}")
+                return result
+            
+            # Get size of new consolidated file
+            try:
+                stat = self._client.stat_object(self.bucket, consolidated_path)
+                result["bytes_after"] = stat.size or 0
+            except S3Error:
+                pass  # Size tracking is best-effort
+            
+            # Delete original batch files only after successful write (Requirement 1.2, 1.3)
+            deleted_count = 0
+            for object_name, _ in batch_files:
+                try:
+                    self._client.remove_object(self.bucket, object_name)
+                    deleted_count += 1
+                    logger.debug(f"Deleted batch file: {object_name}")
+                except S3Error as e:
+                    logger.warning(f"Failed to delete batch file {object_name}: {e}")
+            
+            result["files_deleted"] = deleted_count
+            result["success"] = True
+            
+            logger.info(
+                f"Compaction complete for {partition_prefix}: "
+                f"merged {result['files_merged']} files, "
+                f"deleted {result['files_deleted']} originals, "
+                f"bytes {result['bytes_before']} -> {result['bytes_after']}"
+            )
+            
+        except S3Error as e:
+            # Requirement 1.3: Preserve original files on failure
+            result["error"] = str(e)
+            logger.error(f"Compaction failed for {partition_prefix}: {e}")
+        except Exception as e:
+            result["error"] = str(e)
+            logger.error(f"Unexpected error during compaction of {partition_prefix}: {e}")
+        
+        return result
+
+    def list_partitions_to_compact(
+        self, data_type: str, min_files: int = 2
+    ) -> List[Tuple[str, str, datetime]]:
+        """Find partitions with multiple batch files that need compaction.
+        
+        Scans the specified data type directory for partitions containing
+        multiple batch_*.parquet files that should be merged.
+        
+        Args:
+            data_type: Type of data to scan (klines, indicators, alerts)
+            min_files: Minimum number of batch files to trigger compaction (default: 2)
+            
+        Returns:
+            List of (data_type, symbol, date) tuples for partitions needing compaction
+            
+        Requirements: 1.1
+        """
+        partitions_to_compact: List[Tuple[str, str, datetime]] = []
+        
+        # Track batch file counts per partition: {(symbol, date): count}
+        partition_file_counts: Dict[Tuple[str, datetime], int] = defaultdict(int)
+        
+        try:
+            # List all objects under the data_type prefix
+            objects = self._client.list_objects(
+                self.bucket, prefix=f"{data_type}/", recursive=True
+            )
+            
+            for obj in objects:
+                object_path = obj.object_name
+                
+                # Only count batch files (not consolidated data.parquet files)
+                if "/batch_" not in object_path or not object_path.endswith(".parquet"):
+                    continue
+                
+                # Extract symbol from path
+                symbol_match = re.search(r'symbol=([^/]+)', object_path)
+                if not symbol_match:
+                    continue
+                symbol = symbol_match.group(1)
+                
+                # Extract date from path
+                parsed_date = self.parse_date_from_path(object_path)
+                if not parsed_date:
+                    continue
+                
+                partition_key = (symbol, parsed_date)
+                partition_file_counts[partition_key] += 1
+            
+            # Find partitions with enough files to compact
+            for (symbol, date), count in partition_file_counts.items():
+                if count >= min_files:
+                    partitions_to_compact.append((data_type, symbol, date))
+                    logger.debug(
+                        f"Found partition to compact: {data_type}/{symbol}/{date} "
+                        f"with {count} batch files"
+                    )
+            
+            logger.info(
+                f"Found {len(partitions_to_compact)} partitions to compact "
+                f"for data_type={data_type}"
+            )
+            
+        except S3Error as e:
+            logger.error(f"Error listing partitions for compaction: {e}")
+            raise
+        
+        return partitions_to_compact
+
+    # ==================== Retention Methods ====================
+
+    def delete_old_files(
+        self, data_type: str, retention_days: int
+    ) -> Dict[str, Any]:
+        """Delete files older than the retention period.
+        
+        Lists all files for the specified data type, filters by parsed date,
+        and deletes files older than the retention period.
+        
+        Args:
+            data_type: Type of data to clean up (klines, indicators, alerts)
+            retention_days: Number of days to retain data
+            
+        Returns:
+            Dict with deletion results:
+                - files_deleted: Number of files deleted
+                - bytes_deleted: Total bytes deleted
+                - success: Whether the operation completed successfully
+                - error: Error message if operation failed
+                
+        Requirements: 3.1, 3.3
+        """
+        result = {
+            "files_deleted": 0,
+            "bytes_deleted": 0,
+            "success": False,
+            "error": None,
+        }
+        
+        cutoff_date = datetime.now() - timedelta(days=retention_days)
+        files_to_delete: List[Tuple[str, int]] = []  # (object_name, size)
+        
+        try:
+            # List all objects under the data_type prefix
+            objects = self._client.list_objects(
+                self.bucket, prefix=f"{data_type}/", recursive=True
+            )
+            
+            for obj in objects:
+                object_path = obj.object_name
+                
+                # Only process parquet files
+                if not object_path.endswith(".parquet"):
+                    continue
+                
+                # Parse date from path
+                parsed_date = self.parse_date_from_path(object_path)
+                if parsed_date is None:
+                    logger.debug(f"Could not parse date from path: {object_path}")
+                    continue
+                
+                # Check if file is older than retention period
+                if parsed_date < cutoff_date:
+                    files_to_delete.append((object_path, obj.size or 0))
+            
+            if not files_to_delete:
+                result["success"] = True
+                logger.info(
+                    f"No files older than {retention_days} days found for {data_type}"
+                )
+                return result
+            
+            logger.info(
+                f"Found {len(files_to_delete)} files older than {retention_days} days "
+                f"for {data_type}, proceeding with deletion"
+            )
+            
+            # Delete old files
+            deleted_count = 0
+            bytes_deleted = 0
+            
+            for object_path, size in files_to_delete:
+                try:
+                    self._client.remove_object(self.bucket, object_path)
+                    deleted_count += 1
+                    bytes_deleted += size
+                    logger.debug(f"Deleted old file: {object_path} ({size} bytes)")
+                except S3Error as e:
+                    logger.warning(f"Failed to delete file {object_path}: {e}")
+            
+            result["files_deleted"] = deleted_count
+            result["bytes_deleted"] = bytes_deleted
+            result["success"] = True
+            
+            logger.info(
+                f"Retention cleanup complete for {data_type}: "
+                f"deleted {deleted_count} files, reclaimed {bytes_deleted} bytes"
+            )
+            
+        except S3Error as e:
+            result["error"] = str(e)
+            logger.error(f"Retention cleanup failed for {data_type}: {e}")
+        except Exception as e:
+            result["error"] = str(e)
+            logger.error(f"Unexpected error during retention cleanup of {data_type}: {e}")
+        
+        return result
 
     def close(self) -> None:
         """Close the MinIO client (no-op, client is stateless)."""

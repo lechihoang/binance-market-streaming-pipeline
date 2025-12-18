@@ -27,7 +27,12 @@ from src.binance_kafka_connector.connector import (
     BinanceWebSocketClient,
     process_message,
     EnrichedMessage,
-    Config,
+    BINANCE_WS_URL,
+    BINANCE_STREAMS,
+    RECONNECT_MAX_DELAY_SECONDS,
+    WS_CONNECTION_TIMEOUT,
+    KAFKA_BOOTSTRAP_SERVERS,
+    LOG_LEVEL,
 )
 from src.utils.retry import ExponentialBackoff
 
@@ -65,8 +70,8 @@ class TestWebSocketClient:
         assert client._backoff.jitter_factor == 0.1
 
     @pytest.mark.asyncio
-    async def test_reconnect_with_backoff_calls_connect_and_subscribe(self):
-        """Test reconnect_with_backoff calls connect and subscribe on success."""
+    async def test_reconnect_calls_connect_and_subscribe(self):
+        """Test _reconnect calls connect and subscribe on success."""
         client = BinanceWebSocketClient(
             url="wss://test.example.com/stream",
             streams=["btcusdt@trade"]
@@ -76,8 +81,9 @@ class TestWebSocketClient:
         client.connect = AsyncMock()
         client.subscribe = AsyncMock()
         
-        # Run reconnect (should succeed on first try)
-        await client.reconnect_with_backoff()
+        # Patch sleep to avoid actual delays
+        with patch('asyncio.sleep', new_callable=AsyncMock):
+            await client._reconnect()
         
         # Verify connect and subscribe were called
         client.connect.assert_called_once()
@@ -85,7 +91,7 @@ class TestWebSocketClient:
 
     @pytest.mark.asyncio
     async def test_reconnect_retries_on_failure(self):
-        """Test reconnect_with_backoff retries when connect fails."""
+        """Test _reconnect retries when connect fails."""
         client = BinanceWebSocketClient(
             url="wss://test.example.com/stream",
             streams=["btcusdt@trade"]
@@ -104,7 +110,7 @@ class TestWebSocketClient:
         
         # Patch sleep to avoid actual delays
         with patch('asyncio.sleep', new_callable=AsyncMock):
-            await client.reconnect_with_backoff()
+            await client._reconnect()
         
         # Should have tried 3 times
         assert call_count == 3
@@ -166,8 +172,8 @@ class TestMessageProcessor:
         assert result.topic == "raw_trades"
         assert result.original_data["e"] == "trade"
     
-    def test_process_kline_message(self):
-        """Test processing a valid kline message."""
+    def test_process_kline_message_returns_none(self):
+        """Test processing a kline message returns None (kline removed from EVENT_MAPPING)."""
         raw_json = json.dumps({
             "stream": "btcusdt@kline_1m",
             "data": {
@@ -179,9 +185,8 @@ class TestMessageProcessor:
         
         result = process_message(raw_json)
         
-        assert result is not None
-        assert result.stream_type == "kline"
-        assert result.topic == "raw_klines"
+        # kline event type was removed from EVENT_MAPPING
+        assert result is None
     
     def test_process_ticker_message(self):
         """Test processing a valid ticker message."""
@@ -247,25 +252,27 @@ class TestKafkaProducer:
 # ============================================================================
 
 class TestConfig:
-    """Tests for Config class."""
+    """Tests for module-level configuration constants."""
     
-    def test_config_has_required_attributes(self):
-        """Test Config has all required attributes after simplification."""
+    def test_config_constants_exist(self):
+        """Test module-level config constants exist after simplification."""
         # WebSocket config
-        assert hasattr(Config, 'BINANCE_WS_URL')
-        assert hasattr(Config, 'BINANCE_STREAMS')
-        assert hasattr(Config, 'RECONNECT_MAX_DELAY_SECONDS')
-        assert hasattr(Config, 'WS_CONNECTION_TIMEOUT')
+        assert BINANCE_WS_URL is not None
+        assert BINANCE_STREAMS is not None
+        assert RECONNECT_MAX_DELAY_SECONDS is not None
+        assert WS_CONNECTION_TIMEOUT is not None
         
         # Kafka config
-        assert hasattr(Config, 'KAFKA_BOOTSTRAP_SERVERS')
+        assert KAFKA_BOOTSTRAP_SERVERS is not None
         
         # Logging config
-        assert hasattr(Config, 'LOG_LEVEL')
+        assert LOG_LEVEL is not None
     
-    def test_config_no_batch_attributes(self):
-        """Test Config does not have removed batch attributes."""
-        # These should have been removed per Requirements 4.1, 4.2
-        assert not hasattr(Config, 'BATCH_SIZE')
-        assert not hasattr(Config, 'BATCH_TIMEOUT_MS')
-        assert not hasattr(Config, 'BATCH_CHECK_INTERVAL_MS')
+    def test_config_default_values(self):
+        """Test config constants have sensible default values."""
+        # WebSocket defaults
+        assert "binance.com" in BINANCE_WS_URL or "stream.binance.com" in BINANCE_WS_URL
+        assert isinstance(BINANCE_STREAMS, list)
+        assert len(BINANCE_STREAMS) > 0
+        assert RECONNECT_MAX_DELAY_SECONDS > 0
+        assert WS_CONNECTION_TIMEOUT > 0

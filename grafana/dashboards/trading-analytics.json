@@ -191,6 +191,194 @@
           { "displayName": "Time", "desc": true }
         ]
       }
+    },
+
+    {
+      "id": 4,
+      "title": "Price Spikes (>2% change)",
+      "type": "table",
+      "datasource": {
+        "type": "marcusolsson-json-datasource",
+        "uid": "fastapi"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "method": "GET",
+          "urlPath": "/api/v1/analytics/alerts/price-spikes?limit=50",
+          "fields": [
+            { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].symbol", "name": "Symbol" },
+            { "jsonPath": "$[*].open_price", "name": "Open" },
+            { "jsonPath": "$[*].close_price", "name": "Close" },
+            { "jsonPath": "$[*].price_change_pct", "name": "Change %" }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Time" },
+            "properties": [
+              { "id": "custom.width", "value": 150 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Symbol" },
+            "properties": [
+              { "id": "custom.width", "value": 90 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Open" },
+            "properties": [
+              { "id": "unit", "value": "currencyUSD" },
+              { "id": "decimals", "value": 2 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Close" },
+            "properties": [
+              { "id": "unit", "value": "currencyUSD" },
+              { "id": "decimals", "value": 2 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Change %" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              { "id": "decimals", "value": 2 },
+              { "id": "custom.displayMode", "value": "color-text" },
+              { "id": "thresholds", "value": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 0 }
+                ]
+              }}
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": ["sum"],
+          "fields": ""
+        },
+        "sortBy": [
+          { "displayName": "Time", "desc": true }
+        ]
+      }
+    },
+
+    {
+      "id": 5,
+      "title": "Volume Spikes (>$1M)",
+      "type": "table",
+      "datasource": {
+        "type": "marcusolsson-json-datasource",
+        "uid": "fastapi"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "method": "GET",
+          "urlPath": "/api/v1/analytics/alerts/volume-spikes?limit=50",
+          "fields": [
+            { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].symbol", "name": "Symbol" },
+            { "jsonPath": "$[*].volume", "name": "Volume" },
+            { "jsonPath": "$[*].quote_volume", "name": "Quote Volume" },
+            { "jsonPath": "$[*].trade_count", "name": "Trades" }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Time" },
+            "properties": [
+              { "id": "custom.width", "value": 150 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Symbol" },
+            "properties": [
+              { "id": "custom.width", "value": 90 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Volume" },
+            "properties": [
+              { "id": "decimals", "value": 4 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Quote Volume" },
+            "properties": [
+              { "id": "unit", "value": "currencyUSD" },
+              { "id": "decimals", "value": 0 },
+              { "id": "custom.displayMode", "value": "color-background" },
+              { "id": "thresholds", "value": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "transparent", "value": null },
+                  { "color": "yellow", "value": 1000000 },
+                  { "color": "orange", "value": 5000000 },
+                  { "color": "red", "value": 10000000 }
+                ]
+              }}
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Trades" },
+            "properties": [
+              { "id": "unit", "value": "short" }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": ["sum"],
+          "fields": ""
+        },
+        "sortBy": [
+          { "displayName": "Time", "desc": true }
+        ]
+      }
     }
   ],
   "refresh": "1m",

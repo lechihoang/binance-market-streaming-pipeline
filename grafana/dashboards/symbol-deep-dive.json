@@ -27,7 +27,7 @@
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/analytics/klines/${symbol}USDT?interval=${candleInterval}",
+          "urlPath": "/api/v1/analytics/klines/${symbol}USDT",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
             { "jsonPath": "$[*].close", "name": "Price" }
@@ -107,7 +107,7 @@
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/analytics/klines/${symbol}USDT?interval=${candleInterval}",
+          "urlPath": "/api/v1/analytics/klines/${symbol}USDT",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
             { "jsonPath": "$[*].volume", "name": "Volume" }
@@ -164,7 +164,7 @@
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/analytics/klines/${symbol}USDT?interval=${candleInterval}",
+          "urlPath": "/api/v1/analytics/klines/${symbol}USDT",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
             { "jsonPath": "$[*].trades_count", "name": "Trades" }
@@ -204,6 +204,157 @@
       }
     },
     {
+      "id": 5,
+      "title": "Buy/Sell Ratio - ${symbol}USDT",
+      "type": "timeseries",
+      "datasource": {
+        "type": "marcusolsson-json-datasource",
+        "uid": "fastapi"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "method": "GET",
+          "urlPath": "/api/v1/analytics/klines/${symbol}USDT",
+          "fields": [
+            { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].buy_count", "name": "buy_count" },
+            { "jsonPath": "$[*].sell_count", "name": "sell_count" },
+            { "jsonPath": "$[*].trades_count", "name": "trades_count" }
+          ]
+        }
+      ],
+      "transformations": [
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "reduce": {
+              "reducer": "sum"
+            },
+            "binary": {
+              "left": "buy_count",
+              "operator": "/",
+              "right": "trades_count"
+            },
+            "alias": "buy_ratio"
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "reduce": {
+              "reducer": "sum"
+            },
+            "binary": {
+              "left": "buy_ratio",
+              "operator": "*",
+              "right": "100"
+            },
+            "alias": "Buy %"
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "reduce": {
+              "reducer": "sum"
+            },
+            "binary": {
+              "left": "sell_count",
+              "operator": "/",
+              "right": "trades_count"
+            },
+            "alias": "sell_ratio"
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "reduce": {
+              "reducer": "sum"
+            },
+            "binary": {
+              "left": "sell_ratio",
+              "operator": "*",
+              "right": "100"
+            },
+            "alias": "Sell %"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "buy_count": true,
+              "sell_count": true,
+              "trades_count": true,
+              "buy_ratio": true,
+              "sell_ratio": true
+            },
+            "indexByName": {},
+            "renameByName": {}
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Percentage",
+            "axisPlacement": "left",
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "opacity",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Buy %" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#73BF69" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Sell %" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#F2495C" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "calcs": ["last", "min", "max"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    },
+    {
       "id": 3,
       "title": "Recent Candles - ${symbol}USDT",
       "type": "table",
@@ -215,13 +366,13 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 16
+        "y": 22
       },
       "targets": [
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/analytics/klines/${symbol}USDT?interval=${candleInterval}",
+          "urlPath": "/api/v1/analytics/klines/${symbol}USDT",
           "fields": [
             { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
             { "jsonPath": "$[*].open", "name": "Open" },
@@ -229,7 +380,9 @@
             { "jsonPath": "$[*].low", "name": "Low" },
             { "jsonPath": "$[*].close", "name": "Close" },
             { "jsonPath": "$[*].volume", "name": "Volume" },
-            { "jsonPath": "$[*].trades_count", "name": "Trades" }
+            { "jsonPath": "$[*].trades_count", "name": "Trades" },
+            { "jsonPath": "$[*].buy_count", "name": "Buy Count" },
+            { "jsonPath": "$[*].sell_count", "name": "Sell Count" }
           ]
         }
       ],
@@ -287,6 +440,18 @@
             "properties": [
               { "id": "unit", "value": "short" }
             ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Buy Count" },
+            "properties": [
+              { "id": "unit", "value": "short" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Sell Count" },
+            "properties": [
+              { "id": "unit", "value": "short" }
+            ]
           }
         ]
       },
@@ -329,30 +494,6 @@
           { "selected": false, "text": "XRP", "value": "XRP" }
         ],
         "query": "BTC,ETH,BNB,SOL,XRP",
-        "queryValue": "",
-        "skipUrlSync": false,
-        "type": "custom"
-      },
-
-      {
-        "current": {
-          "selected": true,
-          "text": "1m",
-          "value": "1m"
-        },
-        "hide": 0,
-        "includeAll": false,
-        "label": "Candle",
-        "multi": false,
-        "name": "candleInterval",
-        "options": [
-          { "selected": true, "text": "1m", "value": "1m" },
-          { "selected": false, "text": "5m", "value": "5m" },
-          { "selected": false, "text": "15m", "value": "15m" },
-          { "selected": false, "text": "30m", "value": "30m" },
-          { "selected": false, "text": "1h", "value": "1h" }
-        ],
-        "query": "1m,5m,15m,30m,1h",
         "queryValue": "",
         "skipUrlSync": false,
         "type": "custom"

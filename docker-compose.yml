@@ -178,7 +178,7 @@ services:
   airflow-init:
     build:
       context: .
-      dockerfile: Dockerfile.airflow
+      dockerfile: Dockerfile
     hostname: airflow-init
     container_name: airflow-init
     depends_on:
@@ -226,7 +226,7 @@ services:
   airflow-webserver:
     build:
       context: .
-      dockerfile: Dockerfile.airflow
+      dockerfile: Dockerfile
     hostname: airflow-webserver
     container_name: airflow-webserver
     depends_on:
@@ -296,7 +296,7 @@ services:
   airflow-scheduler:
     build:
       context: .
-      dockerfile: Dockerfile.airflow
+      dockerfile: Dockerfile
     hostname: airflow-scheduler
     container_name: airflow-scheduler
     depends_on:

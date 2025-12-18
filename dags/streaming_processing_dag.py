@@ -31,7 +31,7 @@ import sys
 # Add parent directory to path so 'from src.xxx' imports work
 sys.path.insert(0, '/opt/airflow')
 
-from cleanup_utils import cleanup_streaming_resources
+from src.utils.cleanup import cleanup_streaming_resources
 
 # Import health check functions from storage module
 from src.storage.redis import check_redis_health

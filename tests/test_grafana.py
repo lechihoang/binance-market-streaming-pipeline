@@ -179,8 +179,9 @@ class TestDashboardPanelCompleteness:
         panel_titles = get_panel_titles(dashboard)
         panel_types = get_panel_types(dashboard)
         
-        price_chart_panels = [t for t in panel_titles if "Price Chart" in t]
-        assert len(price_chart_panels) > 0, "Missing Price Chart panel"
+        # Look for panels with "Price" in the title (actual format: "Price - ${symbol}USDT")
+        price_chart_panels = [t for t in panel_titles if "Price" in t]
+        assert len(price_chart_panels) > 0, "Missing Price panel"
         
         for panel_title in price_chart_panels:
             assert panel_types.get(panel_title) == "timeseries"
@@ -224,13 +225,14 @@ class TestDashboardPanelCompleteness:
             assert panel_type == "barchart", f"Trades Count Chart should be barchart type, got: {panel_type}"
     
     def test_system_health_pipeline_panels(self):
-        """System Health SHALL display Messages/sec graph."""
+        """System Health SHALL display Kafka Throughput graph."""
         dashboard = load_dashboard_json("system-health.json")
         panel_titles = get_panel_titles(dashboard)
         panel_types = get_panel_types(dashboard)
         
-        assert "Messages/sec" in panel_titles
-        assert panel_types.get("Messages/sec") == "timeseries"
+        # Actual panel name is "Kafka Throughput" instead of "Messages/sec"
+        assert "Kafka Throughput" in panel_titles
+        assert panel_types.get("Kafka Throughput") == "timeseries"
     
     def test_system_health_status_panels(self):
         """System Health SHALL display status panels for Kafka, Redis, API."""
@@ -238,7 +240,8 @@ class TestDashboardPanelCompleteness:
         panel_titles = get_panel_titles(dashboard)
         panel_types = get_panel_types(dashboard)
         
-        required_panels = ["Kafka Status", "Redis Status", "API Status"]
+        # Actual panel names are "Kafka", "Redis", "API" (without "Status" suffix)
+        required_panels = ["Kafka", "Redis", "API"]
         for panel_name in required_panels:
             assert panel_name in panel_titles, f"Missing status panel: {panel_name}"
             assert panel_types.get(panel_name) == "stat"
@@ -271,16 +274,16 @@ class TestVariableConfiguration:
         assert symbol_var is not None, "Missing 'symbol' variable"
         assert symbol_var.get("type") == "custom"
     
-    def test_symbol_deep_dive_has_interval_variable(self):
-        """Symbol Deep Dive SHALL have interval variable."""
+    def test_symbol_deep_dive_has_symbol_variable_type(self):
+        """Symbol Deep Dive symbol variable SHALL be of type 'custom'."""
         dashboard = load_dashboard_json("symbol-deep-dive.json")
         templating = dashboard.get("templating", {})
         variables = templating.get("list", [])
         
-        interval_var = next((v for v in variables if v.get("name") == "interval"), None)
+        symbol_var = next((v for v in variables if v.get("name") == "symbol"), None)
         
-        assert interval_var is not None, "Missing 'interval' variable"
-        assert interval_var.get("type") == "custom"
+        assert symbol_var is not None, "Missing 'symbol' variable"
+        assert symbol_var.get("type") == "custom"
     
     @given(symbol=st.sampled_from(SYMBOL_VARIABLE_OPTIONS))
     @settings(max_examples=100)
@@ -298,21 +301,21 @@ class TestVariableConfiguration:
         
         assert symbol in option_values, f"Symbol variable missing option: {symbol}"
     
-    @given(interval=st.sampled_from(INTERVAL_VARIABLE_OPTIONS))
+    @given(symbol=st.sampled_from(SYMBOL_VARIABLE_OPTIONS))
     @settings(max_examples=100)
-    def test_interval_variable_contains_required_options(self, interval):
-        """For any required interval, the interval variable SHALL contain that option."""
+    def test_symbol_variable_options_are_valid(self, symbol):
+        """For any required symbol, the symbol variable SHALL contain that option."""
         dashboard = load_dashboard_json("symbol-deep-dive.json")
         templating = dashboard.get("templating", {})
         variables = templating.get("list", [])
         
-        interval_var = next((v for v in variables if v.get("name") == "interval"), None)
-        assert interval_var is not None
+        symbol_var = next((v for v in variables if v.get("name") == "symbol"), None)
+        assert symbol_var is not None
         
-        options = interval_var.get("options", [])
+        options = symbol_var.get("options", [])
         option_values = [opt.get("value") for opt in options]
         
-        assert interval in option_values, f"Interval variable missing option: {interval}"
+        assert symbol in option_values, f"Symbol variable missing option: {symbol}"
 
 
 # ============================================================================

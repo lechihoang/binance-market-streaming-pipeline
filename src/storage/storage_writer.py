@@ -9,7 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .redis import RedisStorage
 from .postgres import PostgresStorage
@@ -72,7 +72,251 @@ class StorageWriter:
             logger.warning("No warm path storage configured (postgres)")
         if self._cold_storage is None:
             logger.warning("No cold path storage configured (minio)")
-    
+
+    # =========================================================================
+    # Generic Helper Methods
+    # =========================================================================
+
+    def _write_to_tier(
+        self,
+        tier: str,
+        write_fn: Callable[[], bool],
+        data_type: str,
+        symbol: str
+    ) -> bool:
+        """Execute a write operation for a single tier with error handling.
+        
+        Wraps a write callable with try/except and logging. This method
+        provides consistent error handling across all tier writes.
+        
+        Args:
+            tier: Tier name ('redis', 'warm', 'cold')
+            write_fn: Callable that performs the actual write, returns True on success
+            data_type: Type of data being written (for logging)
+            symbol: Symbol being written (for logging)
+            
+        Returns:
+            True if write succeeded, False otherwise
+            
+        Requirements: 1.1, 1.2
+        """
+        try:
+            result = write_fn()
+            return result
+        except Exception as e:
+            logger.error(f"{tier} write_{data_type} failed for {symbol}: {e}")
+            return False
+
+    def _execute_parallel_writes(
+        self,
+        tier_write_fns: Dict[str, Callable[[], Tuple[str, bool, List[Dict[str, Any]]]]],
+        timeout: int = 30
+    ) -> Tuple[Dict[str, bool], List[Dict[str, Any]]]:
+        """Execute tier writes in parallel using ThreadPoolExecutor.
+        
+        Extracts common ThreadPoolExecutor logic from batch methods.
+        Each tier write function should return a tuple of:
+        (tier_name, success, failed_records)
+        
+        Args:
+            tier_write_fns: Dict mapping tier name to write function.
+                Each function should return (tier_name, success, failed_records)
+            timeout: Timeout in seconds for each write (default: 30)
+            
+        Returns:
+            Tuple of (tier_results dict, failed_records list)
+            - tier_results: Dict with success status for each tier
+            - failed_records: List of records that failed to write
+            
+        Requirements: 3.1, 3.2
+        """
+        tier_results = {tier: False for tier in tier_write_fns.keys()}
+        all_failed_records: List[Dict[str, Any]] = []
+        
+        with ThreadPoolExecutor(max_workers=len(tier_write_fns)) as executor:
+            futures = {
+                executor.submit(write_fn): tier_name
+                for tier_name, write_fn in tier_write_fns.items()
+            }
+            
+            for future in as_completed(futures, timeout=timeout):
+                tier_name = futures[future]
+                try:
+                    tier, success, failed = future.result(timeout=timeout)
+                    tier_results[tier] = success
+                    if not success and failed:
+                        all_failed_records.extend(failed)
+                except Exception as e:
+                    logger.error(f"{tier_name} tier write timed out or failed: {e}")
+                    tier_results[tier_name] = False
+        
+        return tier_results, all_failed_records
+
+    # =========================================================================
+    # Record Transformer Methods
+    # =========================================================================
+
+    def _transform_aggregation_for_redis(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform aggregation record for Redis storage.
+        
+        Converts datetime to ISO string and extracts OHLCV fields.
+        
+        Args:
+            data: Dict with keys: timestamp, symbol, interval, open, high, low,
+                  close, volume, quote_volume, trades_count
+                  
+        Returns:
+            Dict with OHLCV fields and timestamp as ISO string
+            
+        Requirements: 2.1
+        """
+        timestamp_dt: Optional[datetime] = data.get('timestamp')
+        timestamp_iso = timestamp_dt.isoformat() if timestamp_dt else None
+        
+        return {
+            'symbol': data.get('symbol', ''),
+            'interval': data.get('interval', '1m'),
+            'open': data.get('open'),
+            'high': data.get('high'),
+            'low': data.get('low'),
+            'close': data.get('close'),
+            'volume': data.get('volume'),
+            'timestamp': timestamp_iso,
+        }
+
+    def _transform_aggregation_for_postgres(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform aggregation record for PostgreSQL storage.
+        
+        Keeps datetime as-is and maps fields to candle schema.
+        
+        Args:
+            data: Dict with keys: timestamp, symbol, interval, open, high, low,
+                  close, volume, quote_volume, trades_count
+                  
+        Returns:
+            Dict with candle schema fields and datetime object
+            
+        Requirements: 2.2
+        """
+        return {
+            'timestamp': data.get('timestamp'),
+            'symbol': data.get('symbol', ''),
+            'open': data.get('open'),
+            'high': data.get('high'),
+            'low': data.get('low'),
+            'close': data.get('close'),
+            'volume': data.get('volume'),
+            'quote_volume': data.get('quote_volume'),
+            'trades_count': data.get('trades_count'),
+        }
+
+    def _transform_aggregation_for_minio(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform aggregation record for MinIO storage.
+        
+        Keeps datetime as-is and adds default values for optional fields.
+        
+        Args:
+            data: Dict with keys: timestamp, symbol, interval, open, high, low,
+                  close, volume, quote_volume, trades_count
+                  
+        Returns:
+            Dict with kline schema fields, datetime object, and defaults
+            
+        Requirements: 2.3
+        """
+        return {
+            'timestamp': data.get('timestamp'),
+            'symbol': data.get('symbol', ''),
+            'open': data.get('open'),
+            'high': data.get('high'),
+            'low': data.get('low'),
+            'close': data.get('close'),
+            'volume': data.get('volume'),
+            'quote_volume': data.get('quote_volume', 0),
+            'trades_count': data.get('trades_count', 0),
+        }
+
+    def _transform_alert_for_redis(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform alert record for Redis storage.
+        
+        Converts datetime fields to ISO strings.
+        
+        Args:
+            data: Dict with keys: alert_id, timestamp, symbol, alert_type,
+                  alert_level, created_at, details
+                  
+        Returns:
+            Dict with all fields and datetime fields as ISO strings
+            
+        Requirements: 2.1
+        """
+        timestamp_dt: Optional[datetime] = data.get('timestamp')
+        created_at_dt: Optional[datetime] = data.get('created_at')
+        timestamp_iso = timestamp_dt.isoformat() if timestamp_dt else None
+        created_at_iso = created_at_dt.isoformat() if created_at_dt else None
+        
+        return {
+            **data,
+            'timestamp': timestamp_iso,
+            'created_at': created_at_iso,
+        }
+
+    def _transform_alert_for_postgres(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform alert record for PostgreSQL storage.
+        
+        Maps alert_level to severity and generates message from alert_type and symbol.
+        
+        Args:
+            data: Dict with keys: alert_id, timestamp, symbol, alert_type,
+                  alert_level, created_at, details
+                  
+        Returns:
+            Dict with PostgreSQL alert schema fields
+            
+        Requirements: 2.2
+        """
+        symbol = data.get('symbol', '')
+        alert_type = data.get('alert_type')
+        
+        return {
+            'timestamp': data.get('timestamp'),
+            'symbol': symbol,
+            'alert_type': alert_type,
+            'severity': data.get('alert_level'),  # Map alert_level to severity
+            'message': f"{alert_type}: {symbol}",
+            'metadata': data.get('details'),
+        }
+
+    def _transform_alert_for_minio(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform alert record for MinIO storage.
+        
+        Same mapping as postgres - maps alert_level to severity and generates message.
+        
+        Args:
+            data: Dict with keys: alert_id, timestamp, symbol, alert_type,
+                  alert_level, created_at, details
+                  
+        Returns:
+            Dict with MinIO alert schema fields
+            
+        Requirements: 2.3
+        """
+        symbol = data.get('symbol', '')
+        alert_type = data.get('alert_type')
+        
+        return {
+            'timestamp': data.get('timestamp'),
+            'symbol': symbol,
+            'alert_type': alert_type,
+            'severity': data.get('alert_level'),  # Map alert_level to severity
+            'message': f"{alert_type}: {symbol}",
+            'metadata': data.get('details'),
+        }
+
+    # =========================================================================
+    # Single Record Write Methods
+    # =========================================================================
+
     def write_aggregation(self, data: Dict[str, Any]) -> Dict[str, bool]:
         """Write aggregation data to all 3 tiers.
         
@@ -87,68 +331,44 @@ class StorageWriter:
                   
         Returns:
             Dict with success status for each tier: {'redis': bool, 'warm': bool, 'cold': bool}
+            
+        Requirements: 1.1, 1.3, 4.1
         """
         results = {'redis': False, 'warm': False, 'cold': False}
         symbol = data.get('symbol', '')
         interval = data.get('interval', '1m')
+        timestamp_dt: Optional[datetime] = data.get('timestamp')
         
-        # Get timestamp as datetime, convert to ISO string for Redis
-        timestamp_dt = self._to_datetime(data.get('timestamp'))
-        timestamp_iso = timestamp_dt.isoformat() if timestamp_dt else None
+        # Transform records for each tier
+        redis_data = self._transform_aggregation_for_redis(data)
+        postgres_data = self._transform_aggregation_for_postgres(data)
+        minio_data = self._transform_aggregation_for_minio(data)
         
-        # Write to Redis (overwrite) - use ISO string for timestamp
-        try:
-            ohlcv = {
-                'open': data.get('open'),
-                'high': data.get('high'),
-                'low': data.get('low'),
-                'close': data.get('close'),
-                'volume': data.get('volume'),
-                'timestamp': timestamp_iso,
-            }
-            self.redis.write_aggregation(symbol, interval, ohlcv)
-            results['redis'] = True
-        except Exception as e:
-            logger.error(f"Redis write_aggregation failed for {symbol}: {e}")
+        # Write to Redis using generic helper
+        def write_redis() -> bool:
+            self.redis.write_aggregation(symbol, interval, redis_data)
+            return True
         
-        # Write to warm path (PostgreSQL) - use datetime object (driver auto-converts)
-        try:
-            candle = {
-                'timestamp': timestamp_dt,
-                'symbol': symbol,
-                'open': data.get('open'),
-                'high': data.get('high'),
-                'low': data.get('low'),
-                'close': data.get('close'),
-                'volume': data.get('volume'),
-                'quote_volume': data.get('quote_volume'),
-                'trades_count': data.get('trades_count'),
-            }
-            if self._warm_storage is not None:
-                self._warm_storage.upsert_candle(candle)
-                results['warm'] = True
-        except Exception as e:
-            logger.error(f"PostgreSQL write_aggregation failed for {symbol}: {e}")
+        results['redis'] = self._write_to_tier('redis', write_redis, 'aggregation', symbol)
         
-        # Write to cold path (MinIO) - use datetime object directly
-        try:
-            kline = {
-                'timestamp': timestamp_dt,
-                'symbol': symbol,
-                'open': data.get('open'),
-                'high': data.get('high'),
-                'low': data.get('low'),
-                'close': data.get('close'),
-                'volume': data.get('volume'),
-                'quote_volume': data.get('quote_volume', 0),
-                'trades_count': data.get('trades_count', 0),
-            }
-            if self._cold_storage is not None:
-                write_date = timestamp_dt or datetime.now()
-                self._cold_storage.write_klines(symbol, [kline], write_date)
-                results['cold'] = True
-        except Exception as e:
-            logger.error(f"MinIO write_aggregation failed for {symbol}: {e}")
+        # Write to warm path (PostgreSQL) using generic helper
+        def write_postgres() -> bool:
+            if self._warm_storage is None:
+                return True  # No warm storage configured, consider success
+            self._warm_storage.upsert_candle(postgres_data)
+            return True
+        
+        results['warm'] = self._write_to_tier('warm', write_postgres, 'aggregation', symbol)
+        
+        # Write to cold path (MinIO) using generic helper
+        def write_minio() -> bool:
+            if self._cold_storage is None:
+                return True  # No cold storage configured, consider success
+            write_date = timestamp_dt or datetime.now()
+            self._cold_storage.write_klines(symbol, [minio_data], write_date)
+            return True
+        
+        results['cold'] = self._write_to_tier('cold', write_minio, 'aggregation', symbol)
         
         self._log_write_result('aggregation', symbol, results)
         return results
@@ -167,84 +387,46 @@ class StorageWriter:
                   
         Returns:
             Dict with success status for each tier
+            
+        Requirements: 1.1, 1.3, 4.2
         """
         results = {'redis': False, 'warm': False, 'cold': False}
         symbol = data.get('symbol', '')
+        timestamp_dt: Optional[datetime] = data.get('timestamp')
         
-        # Convert datetime fields to ISO strings for Redis
-        timestamp_dt = self._to_datetime(data.get('timestamp'))
-        created_at_dt = self._to_datetime(data.get('created_at'))
-        timestamp_iso = timestamp_dt.isoformat() if timestamp_dt else None
-        created_at_iso = created_at_dt.isoformat() if created_at_dt else None
+        # Transform records for each tier
+        redis_data = self._transform_alert_for_redis(data)
+        postgres_data = self._transform_alert_for_postgres(data)
+        minio_data = self._transform_alert_for_minio(data)
         
-        # Write to Redis (push to list) - use ISO strings for datetime fields
-        try:
-            redis_data = {
-                **data,
-                'timestamp': timestamp_iso,
-                'created_at': created_at_iso,
-            }
+        # Write to Redis using generic helper
+        def write_redis() -> bool:
             self.redis.write_alert(redis_data)
-            results['redis'] = True
-        except Exception as e:
-            logger.error(f"Redis write_alert failed for {symbol}: {e}")
+            return True
         
-        # Write to warm path (PostgreSQL) - use datetime object (driver auto-converts)
-        # Map alert_level to severity for PostgreSQL schema compatibility
-        try:
-            alert_record = {
-                'timestamp': timestamp_dt,
-                'symbol': symbol,
-                'alert_type': data.get('alert_type'),
-                'severity': data.get('alert_level'),  # Map alert_level to severity
-                'message': f"{data.get('alert_type')}: {symbol}",
-                'metadata': data.get('details'),
-            }
-            if self._warm_storage is not None:
-                self._warm_storage.insert_alert(alert_record)
-                results['warm'] = True
-        except Exception as e:
-            logger.error(f"PostgreSQL write_alert failed for {symbol}: {e}")
+        results['redis'] = self._write_to_tier('redis', write_redis, 'alert', symbol)
         
-        # Write to cold path (MinIO) - use datetime object directly
-        try:
-            alert_record = {
-                'timestamp': timestamp_dt,
-                'symbol': symbol,
-                'alert_type': data.get('alert_type'),
-                'severity': data.get('alert_level'),  # Map alert_level to severity
-                'message': f"{data.get('alert_type')}: {symbol}",
-                'metadata': data.get('details'),
-            }
-            if self._cold_storage is not None:
-                write_date = timestamp_dt or datetime.now()
-                self._cold_storage.write_alerts(symbol, [alert_record], write_date)
-                results['cold'] = True
-        except Exception as e:
-            logger.error(f"MinIO write_alert failed for {symbol}: {e}")
+        # Write to warm path (PostgreSQL) using generic helper
+        def write_postgres() -> bool:
+            if self._warm_storage is None:
+                return True  # No warm storage configured, consider success
+            self._warm_storage.insert_alert(postgres_data)
+            return True
+        
+        results['warm'] = self._write_to_tier('warm', write_postgres, 'alert', symbol)
+        
+        # Write to cold path (MinIO) using generic helper
+        def write_minio() -> bool:
+            if self._cold_storage is None:
+                return True  # No cold storage configured, consider success
+            write_date = timestamp_dt or datetime.now()
+            self._cold_storage.write_alerts(symbol, [minio_data], write_date)
+            return True
+        
+        results['cold'] = self._write_to_tier('cold', write_minio, 'alert', symbol)
         
         self._log_write_result('alert', symbol, results)
         return results
-    
-    def _to_datetime(self, timestamp) -> Optional[datetime]:
-        """Validate and return datetime object.
-        
-        Per timestamp standardization convention, streaming jobs should
-        pass datetime objects directly. This method validates the input.
-        
-        Args:
-            timestamp: datetime object (expected)
-            
-        Returns:
-            datetime object or None if invalid/None
-        """
-        if timestamp is None:
-            return None
-        if isinstance(timestamp, datetime):
-            return timestamp
-        # Log warning for non-datetime input (should not happen with standardized code)
-        logger.warning(f"Expected datetime object, got {type(timestamp).__name__}. Using current time as fallback.")
-        return datetime.now()
     
     def _log_write_result(
         self, 
@@ -282,7 +464,7 @@ class StorageWriter:
     ) -> BatchResult:
         """Write aggregation data to all 3 tiers in parallel.
         
-        Uses ThreadPoolExecutor to call batch methods on all storage tiers
+        Uses _execute_parallel_writes() to call batch methods on all storage tiers
         concurrently. Handles partial failures gracefully - if one tier fails,
         other tiers continue their writes.
         
@@ -298,7 +480,7 @@ class StorageWriter:
         Returns:
             BatchResult with success/failure status for each tier
             
-        Requirements: 1.2, 1.3, 1.4, 1.5, 2.1, 2.2, 2.3, 2.4
+        Requirements: 3.1, 3.3, 4.3
         """
         if not records:
             return BatchResult(
@@ -311,60 +493,14 @@ class StorageWriter:
             )
         
         start_time = time.time()
-        tier_results = {'redis': False, 'warm': False, 'cold': False}
-        all_failed_records: List[Dict[str, Any]] = []
         
-        # Prepare records for each tier
-        redis_records = []
-        postgres_records = []
-        minio_records = []
+        # Use transformer functions for record preparation
+        redis_records = [self._transform_aggregation_for_redis(r) for r in records]
+        postgres_records = [self._transform_aggregation_for_postgres(r) for r in records]
+        minio_records = [self._transform_aggregation_for_minio(r) for r in records]
         
-        for record in records:
-            timestamp_dt = self._to_datetime(record.get('timestamp'))
-            timestamp_iso = timestamp_dt.isoformat() if timestamp_dt else None
-            symbol = record.get('symbol', '')
-            interval = record.get('interval', '1m')
-            
-            # Redis record (uses ISO string for timestamp)
-            redis_records.append({
-                'symbol': symbol,
-                'interval': interval,
-                'open': record.get('open'),
-                'high': record.get('high'),
-                'low': record.get('low'),
-                'close': record.get('close'),
-                'volume': record.get('volume'),
-                'timestamp': timestamp_iso,
-            })
-            
-            # PostgreSQL record (uses datetime object)
-            postgres_records.append({
-                'timestamp': timestamp_dt,
-                'symbol': symbol,
-                'open': record.get('open'),
-                'high': record.get('high'),
-                'low': record.get('low'),
-                'close': record.get('close'),
-                'volume': record.get('volume'),
-                'quote_volume': record.get('quote_volume'),
-                'trades_count': record.get('trades_count'),
-            })
-            
-            # MinIO record (uses datetime object)
-            minio_records.append({
-                'timestamp': timestamp_dt,
-                'symbol': symbol,
-                'open': record.get('open'),
-                'high': record.get('high'),
-                'low': record.get('low'),
-                'close': record.get('close'),
-                'volume': record.get('volume'),
-                'quote_volume': record.get('quote_volume', 0),
-                'trades_count': record.get('trades_count', 0),
-            })
-        
-        # Define tier write functions
-        def write_redis():
+        # Define tier write functions that return (tier_name, success, failed_records)
+        def write_redis() -> Tuple[str, bool, List[Dict[str, Any]]]:
             try:
                 success_count, failed = self.redis.write_aggregations_batch(redis_records)
                 return ('redis', success_count == len(redis_records), failed)
@@ -372,7 +508,7 @@ class StorageWriter:
                 logger.error(f"Redis batch write failed: {e}")
                 return ('redis', False, redis_records)
         
-        def write_postgres():
+        def write_postgres() -> Tuple[str, bool, List[Dict[str, Any]]]:
             if self._warm_storage is None:
                 return ('warm', True, [])
             try:
@@ -382,12 +518,11 @@ class StorageWriter:
                 logger.error(f"PostgreSQL batch write failed: {e}")
                 return ('warm', False, postgres_records)
         
-        def write_minio():
+        def write_minio() -> Tuple[str, bool, List[Dict[str, Any]]]:
             if self._cold_storage is None:
                 return ('cold', True, [])
             try:
-                # Get write date from first record
-                write_date = self._to_datetime(records[0].get('timestamp')) or datetime.now()
+                write_date = records[0].get('timestamp') or datetime.now()
                 success_count, failed_symbols = self._cold_storage.write_klines_batch(
                     minio_records, write_date
                 )
@@ -396,24 +531,13 @@ class StorageWriter:
                 logger.error(f"MinIO batch write failed: {e}")
                 return ('cold', False, minio_records)
         
-        # Execute writes in parallel using ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {
-                executor.submit(write_redis): 'redis',
-                executor.submit(write_postgres): 'warm',
-                executor.submit(write_minio): 'cold',
-            }
-            
-            for future in as_completed(futures, timeout=30):
-                try:
-                    tier, success, failed = future.result(timeout=30)
-                    tier_results[tier] = success
-                    if not success and failed:
-                        all_failed_records.extend(failed)
-                except Exception as e:
-                    tier_name = futures[future]
-                    logger.error(f"{tier_name} tier write timed out or failed: {e}")
-                    tier_results[tier_name] = False
+        # Delegate parallel execution to generic method
+        tier_write_fns = {
+            'redis': write_redis,
+            'warm': write_postgres,
+            'cold': write_minio,
+        }
+        tier_results, all_failed_records = self._execute_parallel_writes(tier_write_fns)
         
         duration_ms = (time.time() - start_time) * 1000
         
@@ -439,7 +563,7 @@ class StorageWriter:
     ) -> BatchResult:
         """Write alerts to all 3 tiers in parallel.
         
-        Uses ThreadPoolExecutor to call batch methods on all storage tiers
+        Uses _execute_parallel_writes() to call batch methods on all storage tiers
         concurrently. Handles partial failures gracefully - if one tier fails,
         other tiers continue their writes.
         
@@ -455,7 +579,7 @@ class StorageWriter:
         Returns:
             BatchResult with success/failure status for each tier
             
-        Requirements: 1.5, 2.1, 2.2, 2.3, 2.4
+        Requirements: 3.1, 3.3, 4.4
         """
         if not alerts:
             return BatchResult(
@@ -468,50 +592,14 @@ class StorageWriter:
             )
         
         start_time = time.time()
-        tier_results = {'redis': False, 'warm': False, 'cold': False}
-        all_failed_records: List[Dict[str, Any]] = []
         
-        # Prepare records for each tier
-        redis_alerts = []
-        postgres_alerts = []
-        minio_alerts = []
+        # Use transformer functions for record preparation
+        redis_alerts = [self._transform_alert_for_redis(a) for a in alerts]
+        postgres_alerts = [self._transform_alert_for_postgres(a) for a in alerts]
+        minio_alerts = [self._transform_alert_for_minio(a) for a in alerts]
         
-        for alert in alerts:
-            timestamp_dt = self._to_datetime(alert.get('timestamp'))
-            created_at_dt = self._to_datetime(alert.get('created_at'))
-            timestamp_iso = timestamp_dt.isoformat() if timestamp_dt else None
-            created_at_iso = created_at_dt.isoformat() if created_at_dt else None
-            symbol = alert.get('symbol', '')
-            
-            # Redis alert (uses ISO strings for datetime fields)
-            redis_alerts.append({
-                **alert,
-                'timestamp': timestamp_iso,
-                'created_at': created_at_iso,
-            })
-            
-            # PostgreSQL alert (uses datetime object, maps alert_level to severity)
-            postgres_alerts.append({
-                'timestamp': timestamp_dt,
-                'symbol': symbol,
-                'alert_type': alert.get('alert_type'),
-                'severity': alert.get('alert_level'),
-                'message': f"{alert.get('alert_type')}: {symbol}",
-                'metadata': alert.get('details'),
-            })
-            
-            # MinIO alert (uses datetime object)
-            minio_alerts.append({
-                'timestamp': timestamp_dt,
-                'symbol': symbol,
-                'alert_type': alert.get('alert_type'),
-                'severity': alert.get('alert_level'),
-                'message': f"{alert.get('alert_type')}: {symbol}",
-                'metadata': alert.get('details'),
-            })
-        
-        # Define tier write functions
-        def write_redis():
+        # Define tier write functions that return (tier_name, success, failed_records)
+        def write_redis() -> Tuple[str, bool, List[Dict[str, Any]]]:
             try:
                 success_count, failed = self.redis.write_alerts_batch(redis_alerts)
                 return ('redis', success_count == len(redis_alerts), failed)
@@ -519,7 +607,7 @@ class StorageWriter:
                 logger.error(f"Redis alerts batch write failed: {e}")
                 return ('redis', False, redis_alerts)
         
-        def write_postgres():
+        def write_postgres() -> Tuple[str, bool, List[Dict[str, Any]]]:
             if self._warm_storage is None:
                 return ('warm', True, [])
             try:
@@ -529,11 +617,11 @@ class StorageWriter:
                 logger.error(f"PostgreSQL alerts batch write failed: {e}")
                 return ('warm', False, postgres_alerts)
         
-        def write_minio():
+        def write_minio() -> Tuple[str, bool, List[Dict[str, Any]]]:
             if self._cold_storage is None:
                 return ('cold', True, [])
             try:
-                write_date = self._to_datetime(alerts[0].get('timestamp')) or datetime.now()
+                write_date = alerts[0].get('timestamp') or datetime.now()
                 success_count, errors = self._cold_storage.write_alerts_batch(
                     minio_alerts, write_date
                 )
@@ -542,24 +630,13 @@ class StorageWriter:
                 logger.error(f"MinIO alerts batch write failed: {e}")
                 return ('cold', False, minio_alerts)
         
-        # Execute writes in parallel using ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {
-                executor.submit(write_redis): 'redis',
-                executor.submit(write_postgres): 'warm',
-                executor.submit(write_minio): 'cold',
-            }
-            
-            for future in as_completed(futures, timeout=30):
-                try:
-                    tier, success, failed = future.result(timeout=30)
-                    tier_results[tier] = success
-                    if not success and failed:
-                        all_failed_records.extend(failed)
-                except Exception as e:
-                    tier_name = futures[future]
-                    logger.error(f"{tier_name} tier alerts write timed out or failed: {e}")
-                    tier_results[tier_name] = False
+        # Delegate parallel execution to generic method
+        tier_write_fns = {
+            'redis': write_redis,
+            'warm': write_postgres,
+            'cold': write_minio,
+        }
+        tier_results, all_failed_records = self._execute_parallel_writes(tier_write_fns)
         
         duration_ms = (time.time() - start_time) * 1000
         

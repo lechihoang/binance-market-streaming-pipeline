@@ -16,6 +16,7 @@ from threading import Lock
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -24,7 +25,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from src.storage.redis import RedisStorage, RedisTickerStorage
+from src.storage.redis import RedisStorage
 from src.storage.postgres import PostgresStorage
 from src.storage.minio import MinioStorage
 from src.storage.query_router import QueryRouter
@@ -173,6 +174,33 @@ The API automatically routes queries to the appropriate storage tier:
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, custom_rate_limit_exceeded_handler)
 
+
+async def interval_validation_error_handler(request: Request, exc: RequestValidationError):
+    """Custom handler for interval validation errors.
+    
+    Converts 422 validation errors for the interval parameter to HTTP 400
+    with a user-friendly message listing valid intervals.
+    
+    Requirements: 1.5
+    """
+    for error in exc.errors():
+        # Check if this is an interval validation error
+        if error.get("loc") == ("query", "interval"):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": f"Invalid interval. Valid values: {', '.join(sorted(VALID_KLINE_INTERVALS))}"
+                }
+            )
+    # For other validation errors, return the default 422 response
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()}
+    )
+
+
+app.add_exception_handler(RequestValidationError, interval_validation_error_handler)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -291,6 +319,8 @@ class KlineResponse(BaseModel):
     volume: float
     quote_volume: Optional[float] = None
     trades_count: Optional[int] = None
+    buy_count: Optional[int] = None
+    sell_count: Optional[int] = None
 
 
 class TradesCountResponse(BaseModel):
@@ -310,6 +340,24 @@ class WhaleAlertResponse(BaseModel):
     total_value: float
 
 
+class PriceSpikeResponse(BaseModel):
+    """Response model for price spike alerts."""
+    timestamp: datetime
+    symbol: str
+    open_price: float
+    close_price: float
+    price_change_pct: float
+
+
+class VolumeSpikeResponse(BaseModel):
+    """Response model for volume spike alerts."""
+    timestamp: datetime
+    symbol: str
+    volume: float
+    quote_volume: float
+    trade_count: int
+
+
 class ServiceHealth(BaseModel):
     """Individual service health status."""
     name: str
@@ -325,6 +373,26 @@ class HealthResponse(BaseModel):
     postgres: bool
     timestamp: datetime
     services: Optional[List[ServiceHealth]] = None
+
+
+class TierStatusResponse(BaseModel):
+    """Status of a single storage tier's last cleanup."""
+    tier: str
+    last_run: Optional[str] = None
+    success: bool
+    records_affected: int = 0
+    bytes_reclaimed: int = 0
+    error: Optional[str] = None
+
+
+class LifecycleHealthResponse(BaseModel):
+    """Lifecycle cleanup health status.
+    
+    Requirements: 5.3
+    """
+    last_run: Optional[str] = None
+    overall_success: bool
+    tiers: List[TierStatusResponse] = []
 
 
 # ============================================================================
@@ -376,9 +444,9 @@ def get_query_router() -> QueryRouter:
 
 
 @lru_cache()
-def get_ticker_storage() -> RedisTickerStorage:
-    """Get singleton RedisTickerStorage instance."""
-    return RedisTickerStorage(
+def get_ticker_storage() -> RedisStorage:
+    """Get singleton RedisStorage instance for ticker data."""
+    return RedisStorage(
         host=os.getenv("REDIS_HOST", "localhost"),
         port=int(os.getenv("REDIS_PORT", "6379")),
         db=int(os.getenv("REDIS_DB", "0")),
@@ -493,8 +561,8 @@ def determine_overall_status(redis_healthy: bool, postgres_healthy: bool, kafka_
 
 
 # Klines helper functions
-VALID_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
 MAX_TIME_RANGE_DAYS = 365
+VALID_KLINE_INTERVALS = {"1m", "5m", "15m"}
 
 
 def validate_time_range(start: datetime, end: datetime) -> None:
@@ -506,14 +574,47 @@ def validate_time_range(start: datetime, end: datetime) -> None:
         )
 
 
+def validate_interval(interval: str) -> None:
+    """Validate that interval is one of the allowed values.
+    
+    Args:
+        interval: Time interval string (1m, 5m, 15m)
+        
+    Raises:
+        HTTPException: If interval is not valid
+        
+    Requirements: 1.5
+    """
+    if interval not in VALID_KLINE_INTERVALS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid interval. Valid values: {', '.join(sorted(VALID_KLINE_INTERVALS))}"
+        )
+
+
 def query_klines_with_fallback(
     query_router: QueryRouter,
     minio: MinioStorage,
     symbol: str,
     start: datetime,
     end: datetime,
+    interval: str = "1m",
 ) -> tuple[List[dict], str]:
-    """Query klines with fallback chain."""
+    """Query klines with fallback chain.
+    
+    Args:
+        query_router: QueryRouter instance
+        minio: MinioStorage instance for fallback
+        symbol: Trading pair symbol
+        start: Start datetime
+        end: End datetime
+        interval: Time interval (1m, 5m, 15m). Defaults to "1m".
+        
+    Returns:
+        Tuple of (data list, data source tier name)
+        
+    Requirements: 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3
+    """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     redis_cutoff = now - timedelta(hours=1)
     postgres_cutoff = now - timedelta(days=90)
@@ -531,18 +632,22 @@ def query_klines_with_fallback(
             symbol=symbol,
             start=start,
             end=end,
+            interval=interval,
         )
         if data:
             return data, primary_tier
     except Exception as e:
-        logger.warning(f"QueryRouter failed for klines/{symbol}: {e}")
+        logger.warning(f"QueryRouter failed for klines/{symbol} interval={interval}: {e}")
     
     try:
-        data = minio.read_klines(symbol, start, end)
+        if interval == "1m":
+            data = minio.read_klines(symbol, start, end)
+        else:
+            data = minio.read_klines_aggregated(symbol, start, end, interval)
         if data:
             return data, "minio"
     except Exception as e:
-        logger.warning(f"MinIO fallback failed for klines/{symbol}: {e}")
+        logger.warning(f"MinIO fallback failed for klines/{symbol} interval={interval}: {e}")
     
     return [], "none"
 
@@ -557,7 +662,7 @@ VALID_TRADES_COUNT_INTERVALS = {"1m", "1h", "1d"}
 
 @app.get("/api/v1/market/ticker-health", response_model=TickerHealthResponse, tags=["market"])
 async def get_ticker_health(
-    storage: RedisTickerStorage = Depends(get_ticker_storage),
+    storage: RedisStorage = Depends(get_ticker_storage),
 ) -> TickerHealthResponse:
     """Get ticker service health status."""
     start_time = time.time()
@@ -585,7 +690,7 @@ async def get_ticker_health(
 @app.get("/api/v1/market/summary", response_model=MarketSummaryResponse, tags=["market"])
 async def get_market_summary(
     response: Response,
-    storage: RedisTickerStorage = Depends(get_ticker_storage),
+    storage: RedisStorage = Depends(get_ticker_storage),
 ) -> MarketSummaryResponse:
     """Get real-time market summary statistics."""
     start_time = time.time()
@@ -621,7 +726,7 @@ async def get_market_summary(
 @app.get("/api/v1/market/realtime", response_model=TickerListResponse, tags=["market"])
 async def get_all_realtime_tickers(
     response: Response,
-    storage: RedisTickerStorage = Depends(get_ticker_storage),
+    storage: RedisStorage = Depends(get_ticker_storage),
 ) -> TickerListResponse:
     """Get all available ticker data."""
     start_time = time.time()
@@ -644,7 +749,7 @@ async def get_all_realtime_tickers(
 async def get_top_by_trades(
     response: Response,
     limit: int = Query(default=5, ge=1, le=50),
-    storage: RedisTickerStorage = Depends(get_ticker_storage),
+    storage: RedisStorage = Depends(get_ticker_storage),
 ) -> List[TopTradingResponse]:
     """Get top symbols by trades count."""
     start_time = time.time()
@@ -684,7 +789,7 @@ async def get_top_by_trades(
 async def get_top_by_volume(
     response: Response,
     limit: int = Query(default=5, ge=1, le=50),
-    storage: RedisTickerStorage = Depends(get_ticker_storage),
+    storage: RedisStorage = Depends(get_ticker_storage),
 ) -> List[TopTradingResponse]:
     """Get top symbols by quote volume."""
     start_time = time.time()
@@ -728,18 +833,23 @@ async def get_top_by_volume(
 async def get_klines(
     symbol: str,
     response: Response,
-    interval: str = Query(default="1m", description="Candle interval"),
+    interval: str = Query(default="1m", pattern="^(1m|5m|15m)$", description="Time interval (1m, 5m, 15m)"),
     start: Optional[datetime] = Query(default=None, description="Start time"),
     end: Optional[datetime] = Query(default=None, description="End time"),
     query_router: QueryRouter = Depends(get_query_router),
     minio: MinioStorage = Depends(get_minio),
 ) -> List[KlineResponse]:
-    """Get OHLCV klines for a symbol with multi-tier fallback."""
-    if interval not in VALID_INTERVALS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid interval. Valid values: {', '.join(sorted(VALID_INTERVALS))}"
-        )
+    """Get OHLCV klines for a symbol with multi-tier fallback.
+    
+    Supports multiple timeframes through on-demand aggregation:
+    - 1m: Returns 1-minute candles directly from storage
+    - 5m: Aggregates 1-minute candles into 5-minute candles
+    - 15m: Aggregates 1-minute candles into 15-minute candles
+    
+    Requirements: 1.1, 1.2, 1.3, 1.4, 1.5
+    """
+    # Validate interval (additional validation beyond regex for explicit error message)
+    validate_interval(interval)
     
     # Normalize timezone-aware datetimes to naive (UTC)
     start = (start.replace(tzinfo=None) if start and start.tzinfo else start)
@@ -754,10 +864,11 @@ async def get_klines(
     validate_time_range(start, end)
     
     data, data_source = query_klines_with_fallback(
-        query_router, minio, symbol, start, end
+        query_router, minio, symbol, start, end, interval
     )
     
     response.headers["X-Data-Source"] = data_source
+    response.headers["X-Interval"] = interval
     
     return [
         KlineResponse(
@@ -769,6 +880,8 @@ async def get_klines(
             volume=record.get("volume", 0.0),
             quote_volume=record.get("quote_volume"),
             trades_count=record.get("trades_count"),
+            buy_count=record.get("buy_count"),
+            sell_count=record.get("sell_count"),
         )
         for record in data
     ]
@@ -886,6 +999,132 @@ async def get_whale_alerts(
     return whale_alerts[:effective_limit]
 
 
+@app.get("/api/v1/analytics/alerts/price-spikes", response_model=List[PriceSpikeResponse], tags=["alerts"])
+async def get_price_spikes(
+    limit: int = Query(default=50, ge=1, le=500),
+    redis: RedisStorage = Depends(get_redis),
+    postgres: PostgresStorage = Depends(get_postgres),
+) -> List[PriceSpikeResponse]:
+    """Get price spike alerts (price change > 2% in 1 minute)."""
+    effective_limit = min(limit, 500)
+    price_spikes = []
+    
+    # Try Redis first for recent alerts
+    try:
+        alerts = redis.get_recent_alerts(limit=effective_limit * 2)
+        for alert in alerts:
+            if alert.get("alert_type", "").upper() == "PRICE_SPIKE":
+                details = alert.get("details", alert.get("metadata", {}))
+                if isinstance(details, str):
+                    try:
+                        details = json_module.loads(details)
+                    except:
+                        details = {}
+                
+                price_spikes.append(PriceSpikeResponse(
+                    timestamp=alert.get("timestamp").replace(tzinfo=timezone.utc),
+                    symbol=alert.get("symbol", "UNKNOWN"),
+                    open_price=float(details.get("open", 0)),
+                    close_price=float(details.get("close", 0)),
+                    price_change_pct=float(details.get("price_change_pct", 0)),
+                ))
+    except Exception:
+        pass
+    
+    # If not enough from Redis, try PostgreSQL
+    if len(price_spikes) < effective_limit:
+        try:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            start = now - timedelta(days=7)
+            
+            for symbol in ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]:
+                pg_alerts = postgres.query_alerts(symbol, start, now)
+                for alert in pg_alerts:
+                    if alert.get("alert_type", "").upper() == "PRICE_SPIKE":
+                        details = alert.get("metadata", alert.get("details", {}))
+                        if isinstance(details, str):
+                            try:
+                                details = json_module.loads(details)
+                            except:
+                                details = {}
+                        
+                        price_spikes.append(PriceSpikeResponse(
+                            timestamp=alert.get("timestamp").replace(tzinfo=timezone.utc),
+                            symbol=alert.get("symbol", "UNKNOWN"),
+                            open_price=float(details.get("open", 0)),
+                            close_price=float(details.get("close", 0)),
+                            price_change_pct=float(details.get("price_change_pct", 0)),
+                        ))
+        except Exception:
+            pass
+    
+    price_spikes.sort(key=lambda x: x.timestamp, reverse=True)
+    return price_spikes[:effective_limit]
+
+
+@app.get("/api/v1/analytics/alerts/volume-spikes", response_model=List[VolumeSpikeResponse], tags=["alerts"])
+async def get_volume_spikes(
+    limit: int = Query(default=50, ge=1, le=500),
+    redis: RedisStorage = Depends(get_redis),
+    postgres: PostgresStorage = Depends(get_postgres),
+) -> List[VolumeSpikeResponse]:
+    """Get volume spike alerts (quote volume > $1M in 1 minute)."""
+    effective_limit = min(limit, 500)
+    volume_spikes = []
+    
+    # Try Redis first for recent alerts
+    try:
+        alerts = redis.get_recent_alerts(limit=effective_limit * 2)
+        for alert in alerts:
+            if alert.get("alert_type", "").upper() == "VOLUME_SPIKE":
+                details = alert.get("details", alert.get("metadata", {}))
+                if isinstance(details, str):
+                    try:
+                        details = json_module.loads(details)
+                    except:
+                        details = {}
+                
+                volume_spikes.append(VolumeSpikeResponse(
+                    timestamp=alert.get("timestamp").replace(tzinfo=timezone.utc),
+                    symbol=alert.get("symbol", "UNKNOWN"),
+                    volume=float(details.get("volume", 0)),
+                    quote_volume=float(details.get("quote_volume", 0)),
+                    trade_count=int(details.get("trade_count", 0)),
+                ))
+    except Exception:
+        pass
+    
+    # If not enough from Redis, try PostgreSQL
+    if len(volume_spikes) < effective_limit:
+        try:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            start = now - timedelta(days=7)
+            
+            for symbol in ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]:
+                pg_alerts = postgres.query_alerts(symbol, start, now)
+                for alert in pg_alerts:
+                    if alert.get("alert_type", "").upper() == "VOLUME_SPIKE":
+                        details = alert.get("metadata", alert.get("details", {}))
+                        if isinstance(details, str):
+                            try:
+                                details = json_module.loads(details)
+                            except:
+                                details = {}
+                        
+                        volume_spikes.append(VolumeSpikeResponse(
+                            timestamp=alert.get("timestamp").replace(tzinfo=timezone.utc),
+                            symbol=alert.get("symbol", "UNKNOWN"),
+                            volume=float(details.get("volume", 0)),
+                            quote_volume=float(details.get("quote_volume", 0)),
+                            trade_count=int(details.get("trade_count", 0)),
+                        ))
+        except Exception:
+            pass
+    
+    volume_spikes.sort(key=lambda x: x.timestamp, reverse=True)
+    return volume_spikes[:effective_limit]
+
+
 # ============================================================================
 # SYSTEM ENDPOINTS
 # ============================================================================
@@ -913,3 +1152,46 @@ async def get_health(
         timestamp=datetime.now(timezone.utc),
         services=[redis_health, postgres_health]
     )
+
+
+@app.get("/api/v1/system/lifecycle-health", response_model=LifecycleHealthResponse, tags=["system"])
+async def get_lifecycle_health(
+    redis: RedisStorage = Depends(get_redis),
+) -> LifecycleHealthResponse:
+    """Get lifecycle cleanup health status.
+    
+    Returns the last cleanup timestamp and status for each storage tier
+    (PostgreSQL, MinIO compaction, MinIO retention).
+    
+    Requirements: 5.3
+    """
+    from src.storage.lifecycle import get_lifecycle_status
+    
+    try:
+        status = get_lifecycle_status(redis.client)
+        
+        tiers = [
+            TierStatusResponse(
+                tier=tier.tier,
+                last_run=tier.last_run,
+                success=tier.success,
+                records_affected=tier.records_affected,
+                bytes_reclaimed=tier.bytes_reclaimed,
+                error=tier.error,
+            )
+            for tier in status.tiers
+        ]
+        
+        return LifecycleHealthResponse(
+            last_run=status.last_run,
+            overall_success=status.overall_success,
+            tiers=tiers,
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to get lifecycle health status: {e}")
+        return LifecycleHealthResponse(
+            last_run=None,
+            overall_success=False,
+            tiers=[],
+        )

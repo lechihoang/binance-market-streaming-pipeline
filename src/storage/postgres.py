@@ -156,6 +156,8 @@ class PostgresStorage:
                         volume DOUBLE PRECISION,
                         quote_volume DOUBLE PRECISION,
                         trades_count INTEGER,
+                        buy_count INTEGER,
+                        sell_count INTEGER,
                         PRIMARY KEY (symbol, timestamp)
                     )
                 """)
@@ -213,18 +215,20 @@ class PostgresStorage:
         """Upsert a 1-minute candle record."""
         query = """
             INSERT INTO trades_1m 
-            (timestamp, symbol, open, high, low, close, volume, quote_volume, trades_count)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (timestamp, symbol, open, high, low, close, volume, quote_volume, trades_count, buy_count, sell_count)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (symbol, timestamp) DO UPDATE SET
                 open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
                 close = EXCLUDED.close, volume = EXCLUDED.volume,
-                quote_volume = EXCLUDED.quote_volume, trades_count = EXCLUDED.trades_count
+                quote_volume = EXCLUDED.quote_volume, trades_count = EXCLUDED.trades_count,
+                buy_count = EXCLUDED.buy_count, sell_count = EXCLUDED.sell_count
         """
         params = (
             candle.get('timestamp'), candle.get('symbol'),
             candle.get('open'), candle.get('high'), candle.get('low'),
             candle.get('close'), candle.get('volume'),
-            candle.get('quote_volume'), candle.get('trades_count')
+            candle.get('quote_volume'), candle.get('trades_count'),
+            candle.get('buy_count'), candle.get('sell_count')
         )
         self._execute_with_retry(query, params)
 
@@ -276,7 +280,7 @@ class PostgresStorage:
         Args:
             candles: List of candle dictionaries with keys:
                 timestamp, symbol, open, high, low, close, volume, 
-                quote_volume, trades_count
+                quote_volume, trades_count, buy_count, sell_count
                 
         Returns:
             Number of affected rows (inserts + updates)
@@ -288,13 +292,14 @@ class PostgresStorage:
         
         query = """
             INSERT INTO trades_1m 
-            (timestamp, symbol, open, high, low, close, volume, quote_volume, trades_count)
+            (timestamp, symbol, open, high, low, close, volume, quote_volume, trades_count, buy_count, sell_count)
             VALUES (%(timestamp)s, %(symbol)s, %(open)s, %(high)s, %(low)s, 
-                    %(close)s, %(volume)s, %(quote_volume)s, %(trades_count)s)
+                    %(close)s, %(volume)s, %(quote_volume)s, %(trades_count)s, %(buy_count)s, %(sell_count)s)
             ON CONFLICT (symbol, timestamp) DO UPDATE SET
                 open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
                 close = EXCLUDED.close, volume = EXCLUDED.volume,
-                quote_volume = EXCLUDED.quote_volume, trades_count = EXCLUDED.trades_count
+                quote_volume = EXCLUDED.quote_volume, trades_count = EXCLUDED.trades_count,
+                buy_count = EXCLUDED.buy_count, sell_count = EXCLUDED.sell_count
         """
         
         def execute_batch():
@@ -383,55 +388,86 @@ class PostgresStorage:
     # ==================== Query Methods ====================
 
     def query_candles(
-        self, symbol: str, start: datetime, end: datetime, interval: str = "1m"
+        self, symbol: str, start: datetime, end: datetime
     ) -> List[Dict[str, Any]]:
-        """Query candles for a symbol within time range."""
-        interval_minutes = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
-        minutes = interval_minutes.get(interval, 1)
+        """Query 1-minute candles for a symbol within time range."""
+        query = """
+            SELECT timestamp, symbol, open, high, low, close, 
+                   volume, quote_volume, trades_count, buy_count, sell_count
+            FROM trades_1m
+            WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+            ORDER BY timestamp ASC
+        """
+        result = self._execute_with_retry(query, (symbol, start, end), fetch=True)
+        return result or []
+
+    def query_candles_aggregated(
+        self, 
+        symbol: str, 
+        start: datetime, 
+        end: datetime, 
+        interval: str = "5m"
+    ) -> List[Dict[str, Any]]:
+        """Query and aggregate 1m candles to higher timeframes using SQL.
         
-        if minutes == 1:
-            query = """
-                SELECT timestamp, symbol, open, high, low, close, 
-                       volume, quote_volume, trades_count
-                FROM trades_1m
-                WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
-                ORDER BY timestamp ASC
-            """
-            result = self._execute_with_retry(query, (symbol, start, end), fetch=True)
-        else:
-            query = """
-                WITH bucketed AS (
-                    SELECT 
-                        date_trunc('hour', timestamp) + 
-                        (EXTRACT(minute FROM timestamp)::int / %s) * INTERVAL '%s minutes' AS bucket,
-                        symbol, open, high, low, close, volume, quote_volume, trades_count,
-                        timestamp,
-                        ROW_NUMBER() OVER (PARTITION BY 
-                            date_trunc('hour', timestamp) + 
-                            (EXTRACT(minute FROM timestamp)::int / %s) * INTERVAL '%s minutes'
-                            ORDER BY timestamp ASC) as rn_first,
-                        ROW_NUMBER() OVER (PARTITION BY 
-                            date_trunc('hour', timestamp) + 
-                            (EXTRACT(minute FROM timestamp)::int / %s) * INTERVAL '%s minutes'
-                            ORDER BY timestamp DESC) as rn_last
-                    FROM trades_1m
-                    WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
-                )
-                SELECT 
-                    bucket as timestamp, %s as symbol,
-                    (SELECT open FROM bucketed b2 WHERE b2.bucket = b.bucket AND b2.rn_first = 1 LIMIT 1) as open,
-                    MAX(high) as high, MIN(low) as low,
-                    (SELECT close FROM bucketed b3 WHERE b3.bucket = b.bucket AND b3.rn_last = 1 LIMIT 1) as close,
-                    SUM(volume) as volume, SUM(quote_volume) as quote_volume, SUM(trades_count) as trades_count
-                FROM bucketed b
-                GROUP BY bucket
-                ORDER BY bucket ASC
-            """
-            result = self._execute_with_retry(
-                query, 
-                (minutes, minutes, minutes, minutes, minutes, minutes, symbol, start, end, symbol), 
-                fetch=True
-            )
+        Uses date_trunc and array_agg for efficient server-side aggregation.
+        Window boundaries align to clock time (e.g., 5m candles start at :00, :05, :10...).
+        
+        Args:
+            symbol: Trading pair symbol (e.g., BTCUSDT)
+            start: Start datetime
+            end: End datetime
+            interval: Aggregation interval ("1m", "5m", or "15m")
+            
+        Returns:
+            List of aggregated candle dictionaries with same structure as query_candles():
+            timestamp, symbol, open, high, low, close, volume, quote_volume, trades_count,
+            buy_count, sell_count
+            
+        Requirements: 2.2, 2.4, 3.1-3.6
+        """
+        # For 1m interval, just return raw candles
+        if interval == "1m":
+            return self.query_candles(symbol, start, end)
+        
+        # Validate interval
+        valid_intervals = {"5m", "15m"}
+        if interval not in valid_intervals:
+            raise ValueError(f"Invalid interval: {interval}. Must be one of {valid_intervals | {'1m'}}")
+        
+        # Extract interval minutes for SQL calculation
+        interval_minutes = int(interval.replace("m", ""))
+        
+        # SQL query that aggregates 1m candles into higher timeframes
+        # Uses date_trunc to align to hour, then adds interval-aligned minutes
+        # array_agg with ORDER BY ensures correct first/last values for open/close
+        query = """
+            SELECT 
+                date_trunc('hour', timestamp) + 
+                    INTERVAL '1 minute' * (EXTRACT(MINUTE FROM timestamp)::int / %s * %s) as timestamp,
+                %s as symbol,
+                (array_agg(open ORDER BY timestamp ASC))[1] as open,
+                MAX(high) as high,
+                MIN(low) as low,
+                (array_agg(close ORDER BY timestamp DESC))[1] as close,
+                SUM(volume) as volume,
+                SUM(quote_volume) as quote_volume,
+                SUM(trades_count) as trades_count,
+                SUM(buy_count) as buy_count,
+                SUM(sell_count) as sell_count
+            FROM trades_1m
+            WHERE symbol = %s AND timestamp >= %s AND timestamp <= %s
+            GROUP BY 1
+            ORDER BY 1 ASC
+        """
+        
+        params = (
+            interval_minutes, interval_minutes,  # For the interval calculation
+            symbol,  # For the symbol column
+            symbol, start, end  # For the WHERE clause
+        )
+        
+        result = self._execute_with_retry(query, params, fetch=True)
         return result or []
 
     def query_indicators(self, symbol: str, start: datetime, end: datetime) -> List[Dict[str, Any]]:
@@ -517,6 +553,133 @@ class PostgresStorage:
             }
             for row in result
         ]
+
+    # ==================== Cleanup Operations ====================
+
+    def cleanup_table(
+        self,
+        table_name: str,
+        retention_days: int,
+        batch_size: int = 1000
+    ) -> int:
+        """Delete records older than retention period from a table.
+        
+        Processes deletions in batches to avoid long-running transactions
+        and minimize lock contention.
+        
+        Args:
+            table_name: Name of the table to clean up (trades_1m, indicators, alerts)
+            retention_days: Number of days to retain data
+            batch_size: Number of records to delete per batch
+            
+        Returns:
+            Total count of deleted records
+            
+        Requirements: 2.1, 2.2, 2.3, 2.4
+        """
+        # Validate table name to prevent SQL injection
+        valid_tables = {"trades_1m", "indicators", "alerts"}
+        if table_name not in valid_tables:
+            raise ValueError(f"Invalid table name: {table_name}. Must be one of {valid_tables}")
+        
+        if retention_days <= 0:
+            raise ValueError(f"retention_days must be positive, got {retention_days}")
+        
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+        
+        total_deleted = 0
+        
+        # Use ctid for efficient batch deletion
+        # ctid is PostgreSQL's internal row identifier
+        if table_name == "alerts":
+            # alerts table uses 'id' as primary key
+            delete_query = f"""
+                DELETE FROM {table_name}
+                WHERE id IN (
+                    SELECT id FROM {table_name}
+                    WHERE timestamp < NOW() - INTERVAL '%s days'
+                    LIMIT %s
+                )
+            """
+        else:
+            # trades_1m and indicators use (symbol, timestamp) as primary key
+            delete_query = f"""
+                DELETE FROM {table_name}
+                WHERE ctid IN (
+                    SELECT ctid FROM {table_name}
+                    WHERE timestamp < NOW() - INTERVAL '%s days'
+                    LIMIT %s
+                )
+            """
+        
+        def delete_batch():
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(delete_query, (retention_days, batch_size))
+                    deleted = cur.rowcount
+                    conn.commit()
+                    return deleted
+        
+        def on_retry(attempt: int, delay_ms: int, error: Exception):
+            record_retry("postgres_storage", f"cleanup_{table_name}", "failed")
+        
+        try:
+            with track_latency("postgres_storage", f"cleanup_{table_name}"):
+                # Keep deleting batches until no more records to delete
+                while True:
+                    deleted = retry_operation(
+                        delete_batch,
+                        config=self._retry_config,
+                        operation_name=f"PostgreSQL cleanup {table_name}",
+                        on_retry=on_retry,
+                    )
+                    total_deleted += deleted
+                    
+                    if deleted < batch_size:
+                        # No more records to delete
+                        break
+                    
+                    logger.debug(f"Deleted batch of {deleted} records from {table_name}, total: {total_deleted}")
+            
+            record_retry("postgres_storage", f"cleanup_{table_name}", "success")
+            logger.info(f"Cleanup completed for {table_name}: {total_deleted} records deleted (retention: {retention_days} days)")
+            return total_deleted
+            
+        except Exception as e:
+            record_error("postgres_storage", f"cleanup_{table_name}_error", "error")
+            logger.error(f"Failed to cleanup {table_name}: {e}")
+            raise
+
+    def cleanup_all_tables(self, retention_days: int, batch_size: int = 1000) -> Dict[str, int]:
+        """Cleanup all tables by deleting records older than retention period.
+        
+        Cleans up trades_1m, indicators, and alerts tables.
+        
+        Args:
+            retention_days: Number of days to retain data
+            batch_size: Number of records to delete per batch
+            
+        Returns:
+            Dictionary mapping table name to count of deleted records
+            
+        Requirements: 2.1, 2.2, 2.3
+        """
+        tables = ["trades_1m", "indicators", "alerts"]
+        results: Dict[str, int] = {}
+        
+        for table in tables:
+            try:
+                deleted = self.cleanup_table(table, retention_days, batch_size)
+                results[table] = deleted
+            except Exception as e:
+                logger.error(f"Failed to cleanup table {table}: {e}")
+                results[table] = 0
+                # Continue with other tables even if one fails
+        
+        total = sum(results.values())
+        logger.info(f"Cleanup all tables completed: {total} total records deleted across {len(tables)} tables")
+        return results
 
 
 # ============================================================================
