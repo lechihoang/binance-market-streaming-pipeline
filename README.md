@@ -158,8 +158,8 @@ The `QueryRouter` automatically selects the appropriate storage tier based on th
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/lechihoang/binance-market-streaming-pipeline.git
-cd binance-market-streaming-pipeline
+git clone https://github.com/lechihoang/Binance-market-streaming-pipeline.git
+cd Binance-market-streaming-pipeline
 ```
 
 2. Copy environment configuration:
