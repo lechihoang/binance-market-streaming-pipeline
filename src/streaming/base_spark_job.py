@@ -1,30 +1,4 @@
-"""
-Base Spark Job Module.
-
-Abstract base class for all Spark streaming jobs, providing common functionality:
-- Logging setup with StructuredFormatter
-- Signal handling for graceful shutdown
-- SparkSession creation with consistent configuration
-- Memory monitoring and batch metrics
-- StorageWriter initialization for 3-tier storage
-- Cleanup logic
-
-Requirements Coverage:
----------------------
-    - Requirement 1.1: BaseSparkJob class to inherit from
-    - Requirement 1.2: Logging setup with StructuredFormatter
-    - Requirement 1.3: Signal handlers for SIGINT and SIGTERM
-    - Requirement 1.4: SparkSession with consistent configuration
-    - Requirement 2.1: JVM memory metrics via _log_memory_metrics()
-    - Requirement 2.2: Batch metrics via _log_batch_metrics()
-    - Requirement 2.3: High memory usage warning
-    - Requirement 3.1: Graceful shutdown with shutdown_requested flag
-    - Requirement 3.2: should_stop() checks shutdown, timeout, empty batches
-    - Requirement 3.3: _cleanup() stops query and SparkSession
-    - Requirement 4.1: StorageWriter initialization via _init_storage_writer()
-    - Requirement 4.2: Configuration from Config object
-    - Requirement 6.1: Abstract run() method for subclasses
-"""
+"""Base Spark Job Module."""
 
 import logging
 import signal
@@ -35,7 +9,8 @@ from typing import Any, Dict, Optional
 
 from pyspark.sql import SparkSession
 
-from src.utils.config import Config
+import os
+
 from src.utils.logging import StructuredFormatter
 from src.utils.shutdown import GracefulShutdown
 from src.storage.redis import RedisStorage
@@ -45,35 +20,13 @@ from src.storage.storage_writer import StorageWriter
 
 
 class BaseSparkJob(ABC):
-    """
-    Abstract base class for all Spark streaming jobs.
-    
-    Provides common functionality for:
-    - Logging setup with StructuredFormatter
-    - Signal handling for graceful shutdown
-    - SparkSession creation with consistent configuration
-    - Memory monitoring and batch metrics
-    - StorageWriter initialization for 3-tier storage
-    - Cleanup logic
-    
-    Subclasses must implement the run() method with job-specific logic.
-    """
-    
-    # Default thresholds (can be overridden by subclasses)
     DEFAULT_EMPTY_BATCH_THRESHOLD = 3
     DEFAULT_MAX_RUNTIME_SECONDS = 180
     DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT = 60
     
-    def __init__(self, config: Config, job_name: str):
-        """
-        Initialize base job with common setup.
-        
-        Args:
-            config: Configuration object with Kafka, Spark, Redis, PostgreSQL, MinIO settings
-            job_name: Name of the job for logging and identification
-        """
-        self.config = config
+    def __init__(self, job_name: str):
         self.job_name = job_name
+        self._load_config()
         self.logger = self._setup_logging()
         self.spark: Optional[SparkSession] = None
         self.query: Optional[Any] = None
@@ -97,19 +50,55 @@ class BaseSparkJob(ABC):
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
+    def _load_config(self) -> None:
+        """Load configuration from environment variables."""
+        # Kafka config
+        self.kafka_bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+        self.kafka_topic_raw_trades = os.getenv("TOPIC_RAW_TRADES", "raw_trades")
+        self.kafka_topic_processed_aggregations = os.getenv("TOPIC_PROCESSED_AGGREGATIONS", "processed_aggregations")
+        self.kafka_topic_alerts = os.getenv("TOPIC_ALERTS", "alerts")
+        self.kafka_max_rate_per_partition = int(os.getenv("KAFKA_MAX_RATE_PER_PARTITION", "50000"))
+        self.kafka_enable_idempotence = os.getenv("KAFKA_ENABLE_IDEMPOTENCE", "true").lower() in ("true", "1", "yes")
+        self.kafka_acks = os.getenv("KAFKA_ACKS", "all")
+        self.kafka_max_in_flight_requests = int(os.getenv("KAFKA_MAX_IN_FLIGHT_REQUESTS", "5"))
+        
+        # Spark config
+        self.spark_app_name = os.getenv("SPARK_APP_NAME", self.job_name)
+        self.spark_executor_cores = int(os.getenv("SPARK_EXECUTOR_CORES", "1"))
+        self.spark_shuffle_partitions = int(os.getenv("SPARK_SHUFFLE_PARTITIONS", "2"))
+        default_checkpoint = f"/opt/airflow/data/spark-checkpoints/{self.job_name}"
+        self.spark_checkpoint_location = os.getenv("SPARK_CHECKPOINT_LOCATION", default_checkpoint)
+        self.spark_state_store_min_batches = int(os.getenv("SPARK_STATE_STORE_MIN_BATCHES", "50"))
+        self.spark_state_store_maintenance_interval = os.getenv("SPARK_STATE_STORE_MAINTENANCE_INTERVAL", "30s")
+        self.spark_backpressure_enabled = os.getenv("SPARK_BACKPRESSURE_ENABLED", "true").lower() in ("true", "1", "yes")
+        
+        # Redis config
+        self.redis_host = os.getenv("REDIS_HOST", "localhost")
+        self.redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        self.redis_db = int(os.getenv("REDIS_DB", "0"))
+        
+        # Postgres config
+        self.postgres_host = os.getenv("POSTGRES_HOST", "localhost")
+        self.postgres_port = int(os.getenv("POSTGRES_PORT", "5432"))
+        self.postgres_user = os.getenv("POSTGRES_USER", "crypto")
+        self.postgres_password = os.getenv("POSTGRES_PASSWORD", "crypto")
+        self.postgres_database = os.getenv("POSTGRES_DB", "crypto_data")
+        self.postgres_max_retries = int(os.getenv("POSTGRES_MAX_RETRIES", "3"))
+        self.postgres_retry_delay = float(os.getenv("POSTGRES_RETRY_DELAY", "1.0"))
+        
+        # MinIO config
+        self.minio_endpoint = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+        self.minio_access_key = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+        self.minio_secret_key = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+        self.minio_bucket = os.getenv("MINIO_BUCKET", "crypto-data")
+        self.minio_secure = os.getenv("MINIO_SECURE", "false").lower() in ("true", "1", "yes")
+        self.minio_max_retries = int(os.getenv("MINIO_MAX_RETRIES", "3"))
+        
+        # Log level
+        self.log_level = os.getenv("LOG_LEVEL", "INFO")
+
     def _setup_logging(self) -> logging.Logger:
-        """
-        Set up structured logging for this job.
-        
-        Creates a logger with StructuredFormatter using the job_name.
-        Sets log level from config.
-        
-        Returns:
-            Configured logger instance
-            
-        Requirements: 1.2
-        """
-        numeric_level = getattr(logging, self.config.log_level.upper(), logging.INFO)
+        numeric_level = getattr(logging, self.log_level.upper(), logging.INFO)
         
         # Create handler
         handler = logging.StreamHandler(sys.stdout)
@@ -128,20 +117,7 @@ class BaseSparkJob(ABC):
         return logger
     
     def _signal_handler(self, signum, frame):
-        """
-        Handle shutdown signals with graceful shutdown support.
-        
-        IMPORTANT: We do NOT call query.stop() here immediately.
-        Instead, we set a flag and let the current batch complete naturally.
-        The query will be stopped after the batch finishes and checkpoint is committed.
-        This prevents offset loss due to incomplete checkpoint writes.
-        
-        Args:
-            signum: Signal number received
-            frame: Current stack frame
-            
-        Requirements: 3.1
-        """
+        """Handle shutdown signals with graceful shutdown support."""
         # Delegate to GracefulShutdown for proper shutdown handling
         self.graceful_shutdown.request_shutdown(signum)
         self.shutdown_requested = True
@@ -155,21 +131,7 @@ class BaseSparkJob(ABC):
         )
     
     def should_stop(self, is_empty_batch: bool) -> bool:
-        """
-        Check if job should stop based on shutdown signal, empty batch count or timeout.
-        
-        IMPORTANT: This is called INSIDE foreachBatch, so returning True here
-        and calling query.stop() will allow Spark to commit the checkpoint
-        for the current batch before stopping.
-        
-        Args:
-            is_empty_batch: Whether the current batch is empty
-            
-        Returns:
-            True if job should stop, False otherwise
-            
-        Requirements: 3.2
-        """
+        """Check if job should stop based on shutdown signal, empty batch count or timeout."""
         # Check if shutdown was requested via signal (SIGTERM/SIGINT)
         if self.shutdown_requested:
             self.logger.info("Shutdown signal detected, stopping after this batch completes")
@@ -204,16 +166,7 @@ class BaseSparkJob(ABC):
         return False
 
     def _create_spark_session(self) -> SparkSession:
-        """
-        Create and configure SparkSession with resource limits.
-        
-        Memory config: executor=512m, driver=512m (Spark minimum ~450MB)
-        
-        Returns:
-            Configured SparkSession
-            
-        Requirements: 1.4
-        """
+        """Create and configure SparkSession with resource limits."""
         # Spark requires minimum ~450MB for driver memory
         executor_memory = "512m"
         driver_memory = "512m"
@@ -221,51 +174,44 @@ class BaseSparkJob(ABC):
         self.logger.info("Creating SparkSession with configuration:")
         self.logger.info(f"  Executor memory: {executor_memory}")
         self.logger.info(f"  Driver memory: {driver_memory}")
-        self.logger.info(f"  Executor cores: {self.config.spark.executor_cores}")
-        self.logger.info(f"  Shuffle partitions: {self.config.spark.shuffle_partitions}")
+        self.logger.info(f"  Executor cores: {self.spark_executor_cores}")
+        self.logger.info(f"  Shuffle partitions: {self.spark_shuffle_partitions}")
         
         spark = (SparkSession.builder
-                 .appName(self.config.spark.app_name)
+                 .appName(self.spark_app_name)
                  .config("spark.jars.packages", 
                         "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0")
                  .config("spark.sql.caseSensitive", "true")
                  .config("spark.executor.memory", executor_memory)
                  .config("spark.driver.memory", driver_memory)
-                 .config("spark.executor.cores", str(self.config.spark.executor_cores))
+                 .config("spark.executor.cores", str(self.spark_executor_cores))
                  .config("spark.sql.shuffle.partitions", 
-                        str(self.config.spark.shuffle_partitions))
+                        str(self.spark_shuffle_partitions))
                  .config("spark.streaming.kafka.maxRatePerPartition",
-                        str(self.config.kafka.max_rate_per_partition))
+                        str(self.kafka_max_rate_per_partition))
                  .config("spark.streaming.backpressure.enabled",
-                        str(self.config.spark.backpressure_enabled).lower())
+                        str(self.spark_backpressure_enabled).lower())
                  .config("spark.sql.streaming.checkpointLocation",
-                        self.config.spark.checkpoint_location)
+                        self.spark_checkpoint_location)
                  # State store reliability settings
                  .config("spark.sql.streaming.minBatchesToRetain",
-                        str(self.config.spark.state_store_min_batches_to_retain))
+                        str(self.spark_state_store_min_batches))
                  .config("spark.sql.streaming.stateStore.maintenanceInterval",
-                        self.config.spark.state_store_maintenance_interval)
+                        self.spark_state_store_maintenance_interval)
                  .config("spark.sql.streaming.stateStore.minDeltasForSnapshot", "5")
                  .config("spark.sql.streaming.stateStore.stateSchemaCheck", "false")
                  .getOrCreate())
         
         # Set log level
-        spark.sparkContext.setLogLevel(self.config.log_level)
+        spark.sparkContext.setLogLevel(self.log_level)
         
         self.logger.info(f"SparkSession created: {spark.sparkContext.applicationId}")
-        self.logger.info(f"Checkpoint location: {self.config.spark.checkpoint_location}")
+        self.logger.info(f"Checkpoint location: {self.spark_checkpoint_location}")
         
         return spark
     
     def _get_jvm_memory_metrics(self) -> Dict[str, Any]:
-        """
-        Get JVM memory metrics from Spark.
-        
-        Returns:
-            Dictionary with memory metrics in MB
-            
-        Requirements: 2.1
-        """
+        """Get JVM memory metrics from Spark."""
         try:
             from pyspark import SparkContext
             
@@ -302,15 +248,7 @@ class BaseSparkJob(ABC):
         batch_id: Optional[int] = None, 
         alert_threshold_pct: float = 80.0
     ) -> None:
-        """
-        Log JVM memory metrics and alert if usage is high.
-        
-        Args:
-            batch_id: Optional batch identifier
-            alert_threshold_pct: Percentage threshold for high memory alert
-            
-        Requirements: 2.1, 2.3
-        """
+        """Log JVM memory metrics and alert if usage is high."""
         metrics = self._get_jvm_memory_metrics()
         
         if "error" in metrics:
@@ -341,17 +279,7 @@ class BaseSparkJob(ABC):
         record_count: int,
         watermark: Optional[str] = None
     ) -> None:
-        """
-        Log batch processing metrics.
-        
-        Args:
-            batch_id: Batch identifier
-            duration_seconds: Processing duration in seconds
-            record_count: Number of records processed
-            watermark: Current watermark timestamp
-            
-        Requirements: 2.2
-        """
+        """Log batch processing metrics."""
         watermark_str = f", watermark={watermark}" if watermark else ""
         self.logger.info(
             f"Batch {batch_id} completed: "
@@ -360,47 +288,37 @@ class BaseSparkJob(ABC):
         )
 
     def _init_storage_writer(self) -> StorageWriter:
-        """
-        Initialize StorageWriter with all 3 storage tiers.
-        
-        Uses PostgresStorage for warm path (concurrent write support)
-        and MinioStorage for cold path (S3-compatible object storage).
-        
-        Returns:
-            Configured StorageWriter instance
-            
-        Requirements: 4.1, 4.2
-        """
+        """Initialize StorageWriter with all 3 storage tiers."""
         self.logger.info(
             "Initializing StorageWriter with 3-tier storage (Redis, PostgreSQL, MinIO)"
         )
         
         # Initialize Redis storage (hot path)
         redis_storage = RedisStorage(
-            host=self.config.redis.host,
-            port=self.config.redis.port,
-            db=self.config.redis.db
+            host=self.redis_host,
+            port=self.redis_port,
+            db=self.redis_db
         )
         
         # Initialize PostgreSQL storage (warm path - supports concurrent writes)
         postgres_storage = PostgresStorage(
-            host=self.config.postgres.host,
-            port=self.config.postgres.port,
-            user=self.config.postgres.user,
-            password=self.config.postgres.password,
-            database=self.config.postgres.database,
-            max_retries=self.config.postgres.max_retries,
-            retry_delay=self.config.postgres.retry_delay
+            host=self.postgres_host,
+            port=self.postgres_port,
+            user=self.postgres_user,
+            password=self.postgres_password,
+            database=self.postgres_database,
+            max_retries=self.postgres_max_retries,
+            retry_delay=self.postgres_retry_delay
         )
         
         # Initialize MinIO storage (cold path - S3-compatible object storage)
         minio_storage = MinioStorage(
-            endpoint=self.config.minio.endpoint,
-            access_key=self.config.minio.access_key,
-            secret_key=self.config.minio.secret_key,
-            bucket=self.config.minio.bucket,
-            secure=self.config.minio.secure,
-            max_retries=self.config.minio.max_retries
+            endpoint=self.minio_endpoint,
+            access_key=self.minio_access_key,
+            secret_key=self.minio_secret_key,
+            bucket=self.minio_bucket,
+            secure=self.minio_secure,
+            max_retries=self.minio_max_retries
         )
         
         storage_writer = StorageWriter(
@@ -413,13 +331,7 @@ class BaseSparkJob(ABC):
         return storage_writer
     
     def _cleanup(self) -> None:
-        """
-        Clean up resources on shutdown.
-        
-        Stops the streaming query and SparkSession.
-        
-        Requirements: 3.3
-        """
+        """Clean up resources on shutdown."""
         self.logger.info("Starting cleanup...")
         
         if self.query and self.query.isActive:
@@ -434,11 +346,5 @@ class BaseSparkJob(ABC):
     
     @abstractmethod
     def run(self) -> None:
-        """
-        Run the streaming job.
-        
-        Must be implemented by subclasses with job-specific logic.
-        
-        Requirements: 6.1
-        """
+        """Run the streaming job. Must be implemented by subclasses."""
         pass

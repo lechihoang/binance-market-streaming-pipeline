@@ -1,16 +1,4 @@
-"""
-Generate Architecture Diagram for Real-Time Crypto Pipeline.
-
-Requirements:
-    pip install diagrams graphviz
-    brew install graphviz  # macOS
-
-Usage:
-    python scripts/generate_architecture_diagram.py
-
-Output:
-    real_time_crypto_pipeline.png
-"""
+"""Generate Architecture Diagram for Real-Time Crypto Pipeline."""
 
 from diagrams import Diagram, Cluster, Edge
 from diagrams.onprem.queue import Kafka

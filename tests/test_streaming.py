@@ -14,10 +14,6 @@ Table of Contents:
 Requirements: 6.2
 """
 
-# ============================================================================
-# IMPORTS AND SETUP
-# ============================================================================
-
 import json
 import uuid
 import sys
@@ -32,20 +28,8 @@ from hypothesis import given, settings, assume
 from hypothesis import strategies as st
 
 
-# ============================================================================
-# AGGREGATION HELPER FUNCTIONS
-# ============================================================================
-
 def calculate_ohlcv(trades: List[Dict[str, Any]]) -> Dict[str, float]:
-    """
-    Calculate OHLCV from list of trades.
-    
-    Args:
-        trades: List of trade dictionaries with 'price' and 'quantity'
-        
-    Returns:
-        Dictionary with OHLCV values
-    """
+    """Calculate OHLCV from list of trades."""
     if not trades:
         return {
             "open": None,
@@ -94,10 +78,6 @@ def calculate_buy_sell_ratio(buy_count: int, sell_count: int) -> float:
         return float('inf')
     return buy_count / sell_count
 
-
-# ============================================================================
-# ANOMALY DETECTION HELPER FUNCTIONS
-# ============================================================================
 
 def is_whale_alert(price: float, quantity: float, threshold: float = 100000.0) -> bool:
     """Check if trade qualifies as whale alert."""
@@ -157,10 +137,6 @@ def create_alert(
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
-
-# ============================================================================
-# OHLCV TESTS
-# ============================================================================
 
 class TestOHLCV:
     """Test OHLCV calculation."""
@@ -234,10 +210,6 @@ class TestOHLCV:
         assert ohlcv["close"] == 95.0
 
 
-# ============================================================================
-# VWAP TESTS
-# ============================================================================
-
 class TestVWAP:
     """Test VWAP calculation."""
     
@@ -281,10 +253,6 @@ class TestVWAP:
         assert vwap == 0.0
 
 
-# ============================================================================
-# PRICE CHANGE TESTS
-# ============================================================================
-
 class TestPriceChange:
     """Test price change percentage calculation."""
     
@@ -309,10 +277,6 @@ class TestPriceChange:
         assert pct == 0.0
 
 
-# ============================================================================
-# BUY-SELL RATIO TESTS
-# ============================================================================
-
 class TestBuySellRatio:
     """Test buy-sell ratio calculation."""
     
@@ -331,10 +295,6 @@ class TestBuySellRatio:
         ratio = calculate_buy_sell_ratio(10, 0)
         assert ratio == float('inf')
 
-
-# ============================================================================
-# WHALE ALERT TESTS
-# ============================================================================
 
 class TestWhaleAlert:
     """Test whale alert detection logic."""
@@ -355,10 +315,6 @@ class TestWhaleAlert:
         assert is_whale_alert(10000.0, 5.0) == False
 
 
-# ============================================================================
-# VOLUME SPIKE TESTS
-# ============================================================================
-
 class TestVolumeSpike:
     """Test volume spike detection logic."""
     
@@ -378,10 +334,6 @@ class TestVolumeSpike:
         assert is_volume_spike(1000.0, []) == False
 
 
-# ============================================================================
-# PRICE SPIKE TESTS
-# ============================================================================
-
 class TestPriceSpike:
     """Test price spike detection logic."""
     
@@ -399,10 +351,6 @@ class TestPriceSpike:
         """Test price spike with zero open price."""
         assert is_price_spike(0.0, 100.0) == False
 
-
-# ============================================================================
-# RSI EXTREME TESTS
-# ============================================================================
 
 class TestRSIExtreme:
     """Test RSI extreme detection logic."""
@@ -425,10 +373,6 @@ class TestRSIExtreme:
         assert is_rsi_extreme(20.0) == True
 
 
-# ============================================================================
-# BOLLINGER BAND BREAKOUT TESTS
-# ============================================================================
-
 class TestBBBreakout:
     """Test Bollinger Band breakout detection logic."""
     
@@ -450,10 +394,6 @@ class TestBBBreakout:
         assert is_bb_breakout(90.0, 110.0, 90.0) == False
 
 
-# ============================================================================
-# MACD CROSSOVER TESTS
-# ============================================================================
-
 class TestMACDCrossover:
     """Test MACD crossover detection logic."""
     
@@ -472,10 +412,6 @@ class TestMACDCrossover:
         assert is_macd_crossover(1.0, 0.0, 2.0, 0.0) == False
         assert is_macd_crossover(-2.0, 0.0, -1.0, 0.0) == False
 
-
-# ============================================================================
-# ALERT COMPLETENESS PROPERTY TESTS
-# ============================================================================
 
 # Strategies for generating test data
 symbol_strategy = st.sampled_from(["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"])
@@ -545,10 +481,6 @@ class TestAlertCompleteness:
             pytest.fail(f"alert_id is not a valid UUID: {alert['alert_id']}")
 
 
-# ============================================================================
-# ANOMALY TYPE COVERAGE PROPERTY TESTS
-# ============================================================================
-
 class TestAnomalyTypeCoverage:
     """
     **Feature: pyspark-simplification, Property 3: Anomaly type coverage**
@@ -583,10 +515,6 @@ class TestAnomalyTypeCoverage:
         else:
             assert not is_extreme, f"Should not detect RSI extreme for RSI={rsi:.2f}"
 
-
-# ============================================================================
-# REDIS STORAGE TESTS
-# ============================================================================
 
 class TestRedisStorage:
     """Test Redis storage operations."""
@@ -655,23 +583,6 @@ class TestRedisStorage:
         assert "Connection refused" in str(exc_info.value)
 
 
-# ============================================================================
-# TECHNICAL INDICATOR TESTS
-# ============================================================================
-
-# ============================================================================
-# NOTE: Technical indicator tests (TestSMA, TestEMA, TestRSI, TestMACD, 
-# TestBollingerBands, TestATR) were removed as part of the simplify-indicators
-# feature. The technical_indicators_job.py module was removed to simplify
-# the system for regular users who don't need complex technical indicators.
-# See: .kiro/specs/simplify-indicators/requirements.md
-# ============================================================================
-
-
-# ============================================================================
-# MICRO-BATCH CONTROLLER
-# ============================================================================
-
 class MicroBatchController:
     """Simulates the micro-batch auto-stop logic from streaming jobs."""
     
@@ -711,10 +622,6 @@ class MicroBatchController:
         
         return -1
 
-
-# ============================================================================
-# MICRO-BATCH PROPERTY TESTS
-# ============================================================================
 
 class TestEmptyBatchCountingTriggersStop:
     """
@@ -821,10 +728,6 @@ class TestNonEmptyBatchResetsCounter:
             f"Should not stop when resetting before threshold, but stopped at index {stop_index}"
 
 
-# ============================================================================
-# INTEGRATED AGGREGATION TESTS
-# ============================================================================
-
 class TestIntegratedAggregation:
     """Test integrated aggregation workflow."""
     
@@ -867,10 +770,6 @@ class TestIntegratedAggregation:
         price_change = calculate_price_change_pct(ohlcv["open"], ohlcv["close"])
         assert price_change == 100.0
 
-
-# ============================================================================
-# KAFKA CONNECTOR TESTS
-# ============================================================================
 
 class TestKafkaConnector:
     """Test Kafka connector operations (mocked)."""

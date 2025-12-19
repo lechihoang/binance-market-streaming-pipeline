@@ -14,10 +14,6 @@ Table of Contents:
 Requirements: 6.5
 """
 
-# ============================================================================
-# IMPORTS AND SETUP
-# ============================================================================
-
 import pytest
 import ast
 import os
@@ -44,10 +40,6 @@ except ImportError:
     DAG = None
     DagBag = None
 
-
-# ============================================================================
-# DAG SYNTAX TESTS
-# ============================================================================
 
 class TestStreamingPipelineDAGSyntax:
     """Test streaming_processing_dag.py syntax and structure."""
@@ -125,17 +117,6 @@ class TestStreamingPipelineDAGSyntax:
         
         assert '>>' in content
 
-
-# ============================================================================
-# NOTE: Health check, field validation, completeness check, and logging tests
-# were removed because they depended on the data_quality module which no longer exists.
-# The actual health check functionality is now in src/storage/ modules.
-# ============================================================================
-
-
-# ============================================================================
-# INTEGRATION TESTS
-# ============================================================================
 
 @pytest.mark.skipif(not AIRFLOW_AVAILABLE, reason="Airflow is not installed")
 class TestFullPipelineExecution:

@@ -1,9 +1,4 @@
-"""
-MinIO storage module for cold path data access.
-
-Stores historical data in S3-compatible bucket with date-partitioned paths.
-Path format: {bucket}/{data_type}/symbol={symbol}/date={YYYY-MM-DD}/data.parquet
-"""
+"""MinIO storage module for cold path data access."""
 
 import io
 import json
@@ -26,8 +21,6 @@ logger = get_logger(__name__)
 
 
 class MinioStorage:
-    """MinIO/S3 storage for historical data (Cold Path)."""
-    
     COMPRESSION = "snappy"
     
     KLINES_SCHEMA = pa.schema([
@@ -156,34 +149,32 @@ class MinioStorage:
         return True
 
     def _read_parquet_from_minio(self, object_path: str) -> Optional[pa.Table]:
-        """Read a Parquet file from MinIO."""
+        """Read a Parquet file from MinIO.
+        
+        Note: Does NOT retry on NoSuchKey errors - these are expected when
+        querying for data that doesn't exist yet. Only retries on transient
+        network/connection errors.
+        """
         try:
-            response = self._execute_with_retry(
-                self._client.get_object, self.bucket, object_path
-            )
+            # Don't use _execute_with_retry here because NoSuchKey should not retry
+            response = self._client.get_object(self.bucket, object_path)
             buffer = io.BytesIO(response.read())
             response.close()
             response.release_conn()
             return pq.read_table(buffer)
         except S3Error as e:
             if e.code == "NoSuchKey":
-                logger.debug(f"Object not found: {object_path}")
+                # Expected case - file doesn't exist, no need to log as warning
                 return None
+            # Log other S3 errors and re-raise
+            logger.warning(f"S3 error reading {object_path}: {e}")
             raise
 
 
 
 
-    # ==================== Write Methods ====================
-
     def write_klines(self, symbol: str, data: List[Dict[str, Any]], date: datetime) -> bool:
-        """Write klines data as Parquet to MinIO.
-        
-        Args:
-            symbol: Trading symbol
-            data: List of kline dicts with datetime objects for timestamp
-            date: Date for partitioning
-        """
+        """Write klines data as Parquet to MinIO."""
         if not data:
             return True
         
@@ -203,13 +194,7 @@ class MinioStorage:
         return self._write_parquet_to_minio(table, object_path)
 
     def write_indicators(self, symbol: str, data: List[Dict[str, Any]], date: datetime) -> bool:
-        """Write indicators data as Parquet to MinIO.
-        
-        Args:
-            symbol: Trading symbol
-            data: List of indicator dicts with datetime objects for timestamp
-            date: Date for partitioning
-        """
+        """Write indicators data as Parquet to MinIO."""
         if not data:
             return True
         
@@ -234,13 +219,7 @@ class MinioStorage:
         return self._write_parquet_to_minio(table, object_path)
 
     def write_alerts(self, symbol: str, data: List[Dict[str, Any]], date: datetime) -> bool:
-        """Write alerts data as Parquet to MinIO.
-        
-        Args:
-            symbol: Trading symbol
-            data: List of alert dicts with datetime objects for timestamp
-            date: Date for partitioning
-        """
+        """Write alerts data as Parquet to MinIO."""
         if not data:
             return True
         
@@ -259,8 +238,6 @@ class MinioStorage:
         object_path = self._get_object_path("alerts", symbol, date)
         return self._write_parquet_to_minio(table, object_path)
 
-    # ==================== Batch Write Methods ====================
-
     def _get_batch_object_path(self, data_type: str, symbol: str, date: datetime) -> str:
         """Generate batch object path with timestamp for uniqueness.
         
@@ -278,14 +255,6 @@ class MinioStorage:
         Handles two partition formats:
         1. date={YYYY-MM-DD} (e.g., "klines/symbol=BTCUSDT/date=2024-01-15/data.parquet")
         2. year={YYYY}/month={MM}/day={DD} (e.g., "klines/symbol=BTCUSDT/year=2024/month=01/day=15/batch_123.parquet")
-        
-        Args:
-            object_path: The MinIO object path to parse
-            
-        Returns:
-            datetime object representing the date, or None if path is invalid
-            
-        Requirements: 3.2
         """
         if not object_path or not isinstance(object_path, str):
             return None
@@ -321,15 +290,6 @@ class MinioStorage:
         
         Groups records by symbol and writes one Parquet file per symbol.
         Uses date-based partitioning (year/month/day).
-        
-        Args:
-            records: List of kline dicts with timestamp, symbol, OHLCV data
-            write_date: Date for partitioning (defaults to current date)
-            
-        Returns:
-            Tuple of (success_count, list of failed symbols)
-            
-        Requirements: 1.4, 5.1, 5.3
         """
         if not records:
             return (0, [])
@@ -381,15 +341,6 @@ class MinioStorage:
         """Write batch of alerts as single Parquet file.
         
         Writes all alerts to a single Parquet file with date-based partitioning.
-        
-        Args:
-            alerts: List of alert dicts with timestamp, symbol, alert_type, etc.
-            write_date: Date for partitioning (defaults to current date)
-            
-        Returns:
-            Tuple of (success_count, list of error messages)
-            
-        Requirements: 5.2, 5.3
         """
         if not alerts:
             return (0, [])
@@ -428,8 +379,6 @@ class MinioStorage:
             return (0, errors)
 
 
-    # ==================== Read Methods ====================
-
     def read_klines(self, symbol: str, start: datetime, end: datetime) -> List[Dict[str, Any]]:
         """Read klines from date-partitioned Parquet files."""
         all_records = []
@@ -463,17 +412,6 @@ class MinioStorage:
         
         Reads 1-minute candles from MinIO storage and aggregates them into
         higher timeframe candles (5m, 15m) using Pandas resample.
-        
-        Args:
-            symbol: Trading symbol (e.g., "BTCUSDT")
-            start: Start datetime for the query
-            end: End datetime for the query
-            interval: Target interval ("1m", "5m", or "15m")
-            
-        Returns:
-            List of aggregated kline dicts with OHLCV data
-            
-        Requirements: 2.3, 2.4
         """
         import pandas as pd
         
@@ -582,33 +520,15 @@ class MinioStorage:
         all_records.sort(key=lambda x: x['timestamp'])
         return all_records
 
-    # ==================== Compaction Methods ====================
-
     def _get_partition_prefix(self, data_type: str, symbol: str, date: datetime) -> str:
-        """Generate partition prefix for batch files.
-        
-        Args:
-            data_type: Type of data (klines, indicators, alerts)
-            symbol: Trading symbol
-            date: Date for the partition
-            
-        Returns:
-            Partition prefix path
-        """
+        """Generate partition prefix for batch files."""
         return (
             f"{data_type}/symbol={symbol}/"
             f"year={date.year}/month={date.month:02d}/day={date.day:02d}/"
         )
 
     def _get_schema_for_data_type(self, data_type: str) -> pa.Schema:
-        """Get the PyArrow schema for a given data type.
-        
-        Args:
-            data_type: Type of data (klines, indicators, alerts)
-            
-        Returns:
-            PyArrow schema for the data type
-        """
+        """Get the PyArrow schema for a given data type."""
         schemas = {
             "klines": self.KLINES_SCHEMA,
             "indicators": self.INDICATORS_SCHEMA,
@@ -624,22 +544,6 @@ class MinioStorage:
         Reads all batch_*.parquet files in the partition, merges them into a
         single consolidated file, and deletes the original batch files only
         on success.
-        
-        Args:
-            data_type: Type of data (klines, indicators, alerts)
-            symbol: Trading symbol
-            date: Date of the partition to compact
-            
-        Returns:
-            Dict with compaction results:
-                - files_merged: Number of files merged
-                - files_deleted: Number of original files deleted
-                - bytes_before: Total bytes before compaction
-                - bytes_after: Total bytes after compaction
-                - success: Whether compaction succeeded
-                - error: Error message if failed
-                
-        Requirements: 1.1, 1.2, 1.3, 1.4
         """
         result = {
             "files_merged": 0,
@@ -698,7 +602,6 @@ class MinioStorage:
             existing_table = self._read_parquet_from_minio(consolidated_path)
             
             if existing_table is not None:
-                # Append to existing consolidated file (Requirement 1.4)
                 merged_table = pa.concat_tables([existing_table, merged_table])
                 logger.debug(
                     f"Appending to existing consolidated file at {consolidated_path}"
@@ -717,7 +620,6 @@ class MinioStorage:
             except S3Error:
                 pass  # Size tracking is best-effort
             
-            # Delete original batch files only after successful write (Requirement 1.2, 1.3)
             deleted_count = 0
             for object_name, _ in batch_files:
                 try:
@@ -738,7 +640,6 @@ class MinioStorage:
             )
             
         except S3Error as e:
-            # Requirement 1.3: Preserve original files on failure
             result["error"] = str(e)
             logger.error(f"Compaction failed for {partition_prefix}: {e}")
         except Exception as e:
@@ -754,15 +655,6 @@ class MinioStorage:
         
         Scans the specified data type directory for partitions containing
         multiple batch_*.parquet files that should be merged.
-        
-        Args:
-            data_type: Type of data to scan (klines, indicators, alerts)
-            min_files: Minimum number of batch files to trigger compaction (default: 2)
-            
-        Returns:
-            List of (data_type, symbol, date) tuples for partitions needing compaction
-            
-        Requirements: 1.1
         """
         partitions_to_compact: List[Tuple[str, str, datetime]] = []
         
@@ -816,8 +708,6 @@ class MinioStorage:
         
         return partitions_to_compact
 
-    # ==================== Retention Methods ====================
-
     def delete_old_files(
         self, data_type: str, retention_days: int
     ) -> Dict[str, Any]:
@@ -825,19 +715,6 @@ class MinioStorage:
         
         Lists all files for the specified data type, filters by parsed date,
         and deletes files older than the retention period.
-        
-        Args:
-            data_type: Type of data to clean up (klines, indicators, alerts)
-            retention_days: Number of days to retain data
-            
-        Returns:
-            Dict with deletion results:
-                - files_deleted: Number of files deleted
-                - bytes_deleted: Total bytes deleted
-                - success: Whether the operation completed successfully
-                - error: Error message if operation failed
-                
-        Requirements: 3.1, 3.3
         """
         result = {
             "files_deleted": 0,
@@ -919,10 +796,6 @@ class MinioStorage:
         """Close the MinIO client (no-op, client is stateless)."""
         logger.info("MinioStorage closed")
 
-
-# ============================================================================
-# HEALTH CHECK
-# ============================================================================
 
 def check_minio_health(
     endpoint: str = "localhost:9000",

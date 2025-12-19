@@ -1,20 +1,4 @@
-"""
-Anomaly Detection Job Module for PySpark Streaming Processor.
-
-This module contains the AnomalyDetectionJob class for detecting various
-anomaly types in cryptocurrency market data.
-
-Anomaly Types Detected:
-- Whale alerts: Trade value > $100,000 (HIGH)
-- Volume spikes: Volume > 3x average (MEDIUM)
-- Price spikes: Price change > 2% (HIGH)
-
-Requirements Coverage:
----------------------
-    - Requirement 1.2: AnomalyDetectionJob in its own file
-    - Requirement 4.6: Does not depend on processed_indicators topic
-    - Requirement 5.2: Inherits from BaseSparkJob
-"""
+"""Anomaly Detection Job."""
 
 import json
 import time
@@ -44,7 +28,6 @@ from pyspark.sql.types import (
 )
 
 from src.streaming.base_spark_job import BaseSparkJob
-from src.utils.config import Config
 
 # Import metrics utilities for production monitoring
 from src.utils.metrics import (
@@ -58,35 +41,12 @@ from src.utils.kafka import KafkaConnector
 
 
 class AnomalyDetectionJob(BaseSparkJob):
-    """
-    Consolidated Spark Structured Streaming job for detecting anomaly types.
+    WHALE_THRESHOLD = 100000.0
+    VOLUME_SPIKE_THRESHOLD = 1000000.0
+    PRICE_SPIKE_THRESHOLD = 2.0
 
-    Monitors multiple data sources and generates alerts for:
-    - Whale alerts: Trade value > $100,000 (HIGH)
-    - Volume spikes: Volume > 3x average (MEDIUM)
-    - Price spikes: Price change > 2% (HIGH)
-    
-    Note: RSI extremes, BB breakouts, and MACD crossovers have been removed
-    as part of the simplify-indicators feature (Requirement 4.6).
-    
-    Inherits common functionality from BaseSparkJob:
-    - Logging setup with StructuredFormatter
-    - Signal handling for graceful shutdown
-    - SparkSession creation with consistent configuration
-    - Memory monitoring and batch metrics
-    - StorageWriter initialization for 3-tier storage
-    - Cleanup logic
-    """
-
-    # Thresholds per design spec
-    WHALE_THRESHOLD = 100000.0  # $100k
-    VOLUME_SPIKE_THRESHOLD = 1000000.0  # $1M quote volume
-    PRICE_SPIKE_THRESHOLD = 2.0  # 2%
-
-    def __init__(self, config: Config):
-        """Initialize Anomaly Detection Job."""
-        # Call parent constructor with job name
-        super().__init__(config, job_name="AnomalyDetectionJob")
+    def __init__(self):
+        super().__init__(job_name="AnomalyDetectionJob")
         
         # Override default graceful shutdown timeout to 90s
         # to allow checkpoint completion before forced termination
@@ -94,7 +54,6 @@ class AnomalyDetectionJob(BaseSparkJob):
 
     @staticmethod
     def _get_trade_schema() -> StructType:
-        """Get schema for raw trade messages from Binance connector."""
         original_data_schema = StructType([
             StructField("E", LongType(), False),
             StructField("s", StringType(), False),
@@ -111,7 +70,6 @@ class AnomalyDetectionJob(BaseSparkJob):
 
     @staticmethod
     def _get_aggregation_schema() -> StructType:
-        """Get schema for aggregation messages."""
         return StructType([
             StructField("window_start", TimestampType(), False),
             StructField("window_end", TimestampType(), False),
@@ -132,7 +90,6 @@ class AnomalyDetectionJob(BaseSparkJob):
         ])
 
     def detect_whale_alerts(self, df: DataFrame) -> DataFrame:
-        """Detect whale alerts from raw trades. Whale alert: Trade value > $100,000, level HIGH"""
         self.logger.info(f"Detecting whale alerts with threshold: ${self.WHALE_THRESHOLD:,.2f}")
         trade_schema = self._get_trade_schema()
         parsed_df = df.select(from_json(col("value").cast("string"), trade_schema).alias("trade"))
@@ -155,7 +112,6 @@ class AnomalyDetectionJob(BaseSparkJob):
         return alerts_df
 
     def detect_volume_spikes(self, df: DataFrame) -> DataFrame:
-        """Detect volume spikes from aggregations. Volume spike: Quote volume > $1M, level MEDIUM"""
         self.logger.info(f"Detecting volume spikes with quote_volume threshold: ${self.VOLUME_SPIKE_THRESHOLD:,.0f}")
         agg_schema = self._get_aggregation_schema()
         parsed_df = df.select(from_json(col("value").cast("string"), agg_schema).alias("agg"))
@@ -177,7 +133,6 @@ class AnomalyDetectionJob(BaseSparkJob):
         return alerts_df
 
     def detect_price_spikes(self, df: DataFrame) -> DataFrame:
-        """Detect price spikes from aggregations. Price spike: Price change > 2% in 1 minute, level HIGH"""
         self.logger.info(f"Detecting price spikes with threshold: {self.PRICE_SPIKE_THRESHOLD}%")
         agg_schema = self._get_aggregation_schema()
         parsed_df = df.select(from_json(col("value").cast("string"), agg_schema).alias("agg"))
@@ -199,19 +154,6 @@ class AnomalyDetectionJob(BaseSparkJob):
         return alerts_df
 
     def _create_alert(self, alert_id: str, timestamp: datetime, symbol: str, alert_type: str, alert_level: str, details: Dict[str, Any]) -> Dict[str, Any]:
-        """Create an alert dictionary with all required fields.
-        
-        Args:
-            alert_id: UUID generated by Spark in detect_* methods
-            timestamp: Alert timestamp
-            symbol: Trading symbol
-            alert_type: Type of alert (WHALE_ALERT, VOLUME_SPIKE, PRICE_SPIKE)
-            alert_level: Alert severity (HIGH, MEDIUM)
-            details: Additional alert details as dict
-        
-        Returns datetime objects for timestamp and created_at fields.
-        The storage layer (storage_writer) handles conversion to ISO string for Redis/Kafka.
-        """
         return {
             "alert_id": alert_id,
             "timestamp": timestamp,
@@ -223,11 +165,7 @@ class AnomalyDetectionJob(BaseSparkJob):
         }
 
     def _write_alerts_to_sinks(self, alerts: List[Dict[str, Any]], batch_id: int) -> None:
-        """Write alerts to multiple sinks using StorageWriter batch method for 3-tier storage.
-        
-        Per Requirements 1.2, 1.3, 1.4, 2.1: Collects all alerts first, then calls
-        storage_writer.write_alerts_batch() for parallel batch writes.
-        """
+        """Write alerts to multiple sinks using StorageWriter batch method."""
         if not alerts:
             self.logger.debug(f"Batch {batch_id}: No alerts to write")
             return
@@ -235,9 +173,9 @@ class AnomalyDetectionJob(BaseSparkJob):
 
         # Write to Kafka (for downstream consumers)
         try:
-            kafka_conn = KafkaConnector(bootstrap_servers=self.config.kafka.bootstrap_servers, client_id="anomaly_detection_job")
+            kafka_conn = KafkaConnector(bootstrap_servers=self.kafka_bootstrap_servers, client_id="anomaly_detection_job")
             for alert in alerts:
-                kafka_conn.send(topic=self.config.kafka.topic_alerts, value=alert, key=alert["symbol"])
+                kafka_conn.send(topic=self.kafka_topic_alerts, value=alert, key=alert["symbol"])
             kafka_conn.close()
             self.logger.debug(f"Batch {batch_id}: Wrote {len(alerts)} alerts to Kafka")
         except Exception as e:
@@ -270,11 +208,7 @@ class AnomalyDetectionJob(BaseSparkJob):
         self.logger.info(f"Batch {batch_id}: StorageWriter completed - {success_count} succeeded, {failure_count} failed")
 
     def _process_batch(self, batch_df: DataFrame, batch_id: int) -> None:
-        """Process a batch of alerts and write to sinks.
-        
-        If shutdown is requested, raises InterruptedError to prevent Spark from
-        committing the checkpoint. This ensures the batch will be replayed on restart.
-        """
+        """Process a batch of alerts and write to sinks."""
         # Check shutdown before starting - raise exception to prevent offset commit
         if self.graceful_shutdown.shutdown_requested:
             self.logger.info(f"Batch {batch_id}: Aborting due to shutdown request")
@@ -345,15 +279,14 @@ class AnomalyDetectionJob(BaseSparkJob):
             self.graceful_shutdown.mark_batch_end(batch_id)
 
     def _create_stream_reader(self, topic: str) -> DataFrame:
-        """Create Kafka stream reader for a specific topic."""
         self.logger.info(f"Creating stream reader for topic: {topic}")
         try:
             df = (self.spark.readStream
                   .format("kafka")
-                  .option("kafka.bootstrap.servers", self.config.kafka.bootstrap_servers)
+                  .option("kafka.bootstrap.servers", self.kafka_bootstrap_servers)
                   .option("subscribe", topic)
                   .option("startingOffsets", "earliest")
-                  .option("maxOffsetsPerTrigger", str(self.config.kafka.max_rate_per_partition * 10))
+                  .option("maxOffsetsPerTrigger", str(self.kafka_max_rate_per_partition * 10))
                   .load())
             self.logger.info(f"Stream reader created for topic: {topic}")
             return df
@@ -362,7 +295,6 @@ class AnomalyDetectionJob(BaseSparkJob):
             raise
 
     def run(self) -> None:
-        """Run the Anomaly Detection streaming job."""
         try:
             self.spark = self._create_spark_session()
             self.storage_writer = self._init_storage_writer()
@@ -374,8 +306,8 @@ class AnomalyDetectionJob(BaseSparkJob):
             self.logger.info(f"  - Price spikes ({self.PRICE_SPIKE_THRESHOLD}% change)")
             self.logger.info("Writing to 3-tier storage: Redis (hot), PostgreSQL (warm), MinIO (cold)")
 
-            raw_trades_stream = self._create_stream_reader(self.config.kafka.topic_raw_trades)
-            aggregations_stream = self._create_stream_reader(self.config.kafka.topic_processed_aggregations)
+            raw_trades_stream = self._create_stream_reader(self.kafka_topic_raw_trades)
+            aggregations_stream = self._create_stream_reader(self.kafka_topic_processed_aggregations)
 
             whale_alerts = self.detect_whale_alerts(raw_trades_stream)
             volume_spikes = self.detect_volume_spikes(aggregations_stream)
@@ -391,7 +323,7 @@ class AnomalyDetectionJob(BaseSparkJob):
             # Trigger interval increased to 60s to match actual processing time
             query = (all_alerts.writeStream.foreachBatch(self._process_batch).outputMode("append")
                     .trigger(processingTime='60 seconds')
-                    .option("checkpointLocation", self.config.spark.checkpoint_location).start())
+                    .option("checkpointLocation", self.spark_checkpoint_location).start())
             self.query = query
             query.awaitTermination(timeout=self.max_runtime_seconds)
 
@@ -413,9 +345,7 @@ class AnomalyDetectionJob(BaseSparkJob):
 
 
 def run_anomaly_detection_job():
-    """Main entry point for Anomaly Detection Job."""
-    config = Config.from_env("AnomalyDetectionJob")
-    job = AnomalyDetectionJob(config)
+    job = AnomalyDetectionJob()
     job.run()
 
 

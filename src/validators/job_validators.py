@@ -1,17 +1,4 @@
-"""
-Job Validators Module
-
-Provides validator classes for validating output from streaming jobs.
-Each validator defines required fields, nullable fields, and validation logic.
-
-Also provides validation functions that query Redis for recent data and
-validate using the appropriate validator class.
-
-Requirements:
-- 2.1, 2.2, 2.3, 2.4, 2.5: Aggregation validation
-- 4.1, 4.2, 4.3, 4.4, 4.5: Anomaly validation
-- 5.1, 5.2, 5.3, 5.4, 5.5: Storage tier validation
-"""
+"""Job Validators."""
 
 import time
 from dataclasses import dataclass, field
@@ -22,15 +9,12 @@ from src.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-# Constants for retry logic
 MAX_RETRIES = 3
-RETRY_DELAY_BASE = 1.0  # Base delay in seconds for exponential backoff
+RETRY_DELAY_BASE = 1.0
 
 
 @dataclass
 class ValidationError:
-    """Represents a validation error for a single record."""
-    
     record_identifier: str
     error_type: str
     message: str
@@ -40,8 +24,6 @@ class ValidationError:
 
 @dataclass
 class ValidationResult:
-    """Result of validating a set of records."""
-    
     validator_name: str
     is_valid: bool
     record_count: int
@@ -60,16 +42,6 @@ class ValidationResult:
 
 
 class AggregationValidator:
-    """
-    Validator for trade aggregation OHLCV output.
-    
-    Validates that aggregation records contain all required fields
-    and allows nullable fields to be null without failing.
-    
-    Requirements: 2.1, 2.2, 2.3
-    """
-    
-    # Required fields that must be present and non-null
     REQUIRED_FIELDS: Set[str] = {
         'symbol',
         'window_start',
@@ -82,7 +54,6 @@ class AggregationValidator:
         'volume',
     }
     
-    # Nullable fields that may be null without causing validation failure
     NULLABLE_FIELDS: Set[str] = {
         'vwap',
         'price_stddev',
@@ -100,15 +71,7 @@ class AggregationValidator:
         self.name = "AggregationValidator"
     
     def validate(self, records: List[Dict[str, Any]]) -> ValidationResult:
-        """
-        Validate a list of aggregation records.
-        
-        Args:
-            records: List of aggregation record dictionaries
-            
-        Returns:
-            ValidationResult with validation status and details
-        """
+        """Validate a list of aggregation records."""
         errors: List[ValidationError] = []
         valid_count = 0
         field_presence: Dict[str, int] = {f: 0 for f in self.REQUIRED_FIELDS | self.NULLABLE_FIELDS}
@@ -201,16 +164,6 @@ class AggregationValidator:
 
 
 class AnomalyValidator:
-    """
-    Validator for anomaly detection alerts output.
-    
-    Validates that alert records contain all required fields and that
-    alert_type and alert_level have valid enum values.
-    
-    Requirements: 4.1, 4.2, 4.3
-    """
-    
-    # Required fields that must be present and non-null
     REQUIRED_FIELDS: Set[str] = {
         'alert_id',
         'symbol',
@@ -220,7 +173,6 @@ class AnomalyValidator:
         'created_at',
     }
     
-    # Valid alert types
     VALID_ALERT_TYPES: Set[str] = {
         'WHALE_ALERT',
         'VOLUME_SPIKE',
@@ -230,14 +182,12 @@ class AnomalyValidator:
         'MACD_CROSSOVER',
     }
     
-    # Valid alert levels
     VALID_ALERT_LEVELS: Set[str] = {
         'HIGH',
         'MEDIUM',
         'LOW',
     }
     
-    # Optional fields that may be present
     NULLABLE_FIELDS: Set[str] = {
         'details',
     }
@@ -246,15 +196,7 @@ class AnomalyValidator:
         self.name = "AnomalyValidator"
     
     def validate(self, records: List[Dict[str, Any]]) -> ValidationResult:
-        """
-        Validate a list of alert records.
-        
-        Args:
-            records: List of alert record dictionaries
-            
-        Returns:
-            ValidationResult with validation status and details
-        """
+        """Validate a list of alert records."""
         errors: List[ValidationError] = []
         valid_count = 0
         field_presence: Dict[str, int] = {f: 0 for f in self.REQUIRED_FIELDS | self.NULLABLE_FIELDS}
@@ -378,27 +320,12 @@ class AnomalyValidator:
         return " ".join(parts)
 
 
-# =============================================================================
-# Validation Functions that Query Redis
-# =============================================================================
-
-
 def _retry_with_backoff(
     func,
     max_retries: int = MAX_RETRIES,
     retry_delay_base: float = RETRY_DELAY_BASE,
 ) -> Tuple[Any, Optional[Exception]]:
-    """
-    Execute a function with exponential backoff retry logic.
-    
-    Args:
-        func: Callable to execute
-        max_retries: Maximum number of retry attempts
-        retry_delay_base: Base delay between retries (exponential backoff)
-        
-    Returns:
-        Tuple of (result, error) - result is None if all retries failed
-    """
+    """Execute a function with exponential backoff retry logic."""
     last_error = None
     
     for attempt in range(max_retries):
@@ -429,25 +356,7 @@ def validate_aggregation_output(
     interval: str = "1m",
     **kwargs,
 ) -> ValidationResult:
-    """
-    Validate trade aggregation output by querying Redis.
-    
-    Queries Redis for recent aggregation data and validates records
-    using AggregationValidator. Handles retry logic for storage unavailability.
-    
-    Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 5.1, 5.4, 5.5
-    
-    Args:
-        redis_storage: RedisStorage instance to query
-        symbols: List of symbols to validate (if None, uses default symbols)
-        interval: Time interval for aggregation data (default: "1m")
-        
-    Returns:
-        ValidationResult with validation status and details
-        
-    Raises:
-        Exception: If Redis is unavailable after all retries
-    """
+    """Validate trade aggregation output by querying Redis."""
     import os
     from src.storage.redis import RedisStorage
     
@@ -494,7 +403,6 @@ def validate_aggregation_output(
     
     records = result or []
     
-    # Handle empty data scenario (Requirement 5.5)
     if not records:
         logger.warning(
             "No aggregation data found in Redis. "
@@ -514,7 +422,6 @@ def validate_aggregation_output(
     # Validate records
     validation_result = validator.validate(records)
     
-    # Log results (Requirement 2.5)
     if validation_result.is_valid:
         logger.info(
             f"Aggregation validation passed: {validation_result.record_count} records validated. "
@@ -533,24 +440,7 @@ def validate_anomaly_output(
     limit: int = 100,
     **kwargs,
 ) -> ValidationResult:
-    """
-    Validate anomaly detection output by querying Redis.
-    
-    Queries Redis for recent alert data and validates records
-    using AnomalyValidator. Empty output is valid (no anomalies detected).
-    
-    Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 5.3, 5.4, 5.5
-    
-    Args:
-        redis_storage: RedisStorage instance to query
-        limit: Maximum number of alerts to fetch (default: 100)
-        
-    Returns:
-        ValidationResult with validation status and details
-        
-    Raises:
-        Exception: If Redis is unavailable after all retries
-    """
+    """Validate anomaly detection output by querying Redis."""
     import os
     from src.storage.redis import RedisStorage
     
@@ -576,8 +466,6 @@ def validate_anomaly_output(
     
     records = result or []
     
-    # Handle empty data scenario (Requirement 4.5, 5.5)
-    # Empty output is valid - no anomalies detected
     if not records:
         logger.info(
             "No alerts found in Redis. "

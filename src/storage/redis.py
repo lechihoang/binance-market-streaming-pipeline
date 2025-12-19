@@ -1,15 +1,4 @@
-"""
-Unified Redis Storage Module.
-
-Provides a single RedisStorage class that consolidates all Redis functionality:
-- Aggregation methods (OHLCV data)
-- Ticker methods (real-time ticker data)
-- Trade methods (recent trades)
-- Alert methods (anomaly alerts)
-- Generic write methods (hash, list, string types)
-
-Requirements: 1.2, 1.3, 2.1, 3.1, 3.2, 3.3
-"""
+"""Unified Redis Storage Module."""
 
 import json
 import logging
@@ -30,22 +19,7 @@ def check_redis_health(
     max_retries: int = 3,
     retry_delay: float = 1.0,
 ) -> Dict[str, Any]:
-    """
-    Check Redis connection health with retry logic.
-    
-    Args:
-        host: Redis host
-        port: Redis port
-        db: Redis database number
-        max_retries: Maximum number of retry attempts
-        retry_delay: Delay between retries in seconds
-        
-    Returns:
-        Health check result dictionary
-        
-    Raises:
-        Exception: If health check fails after max retries
-    """
+    """Check Redis connection health with retry logic."""
     last_error = None
     
     for attempt in range(1, max_retries + 1):
@@ -78,29 +52,16 @@ def check_redis_health(
 
 
 class RedisStorage:
-    """
-    Unified Redis storage class for hot path data.
-    
-    Consolidates functionality from:
-    - RedisStorage (aggregations, alerts, trades)
-    - RedisTickerStorage (ticker data)
-    - RedisConnector (generic writes)
-    
-    Requirements: 1.2, 1.3, 2.1, 3.1, 3.2, 3.3
-    """
-    
-    # Key prefixes for different data types
     PREFIX_AGGREGATION = "agg"
     PREFIX_TICKER = "ticker"
     PREFIX_TRADE = "trade"
     PREFIX_ALERT = "alert"
     PREFIX_PRICE = "price"
     
-    # Default TTLs
-    DEFAULT_AGGREGATION_TTL = 3600  # 1 hour
-    DEFAULT_TICKER_TTL = 60  # 1 minute
-    DEFAULT_TRADE_TTL = 300  # 5 minutes
-    DEFAULT_ALERT_TTL = 86400  # 24 hours
+    DEFAULT_AGGREGATION_TTL = 3600
+    DEFAULT_TICKER_TTL = 60
+    DEFAULT_TRADE_TTL = 300
+    DEFAULT_ALERT_TTL = 86400
     
     def __init__(
         self,
@@ -113,19 +74,7 @@ class RedisStorage:
         ttl_seconds: Optional[int] = None,
         ticker_ttl_seconds: Optional[int] = None,
     ):
-        """
-        Initialize Redis storage.
-        
-        Args:
-            host: Redis host
-            port: Redis port
-            db: Redis database number
-            password: Redis password (optional)
-            max_retries: Maximum connection retry attempts
-            retry_delay: Delay between retries in seconds
-            ttl_seconds: Default TTL for ticker data (backward compatibility)
-            ticker_ttl_seconds: TTL for ticker data (preferred parameter)
-        """
+        """Initialize Redis storage."""
         self.host = host
         self.port = port
         self.db = db
@@ -186,27 +135,12 @@ class RedisStorage:
         except Exception:
             return False
 
-    # =========================================================================
-    # AGGREGATION METHODS (from old RedisStorage)
-    # =========================================================================
-    
     def _make_aggregation_key(self, symbol: str, interval: str = "1m") -> str:
         """Create Redis key for aggregation data."""
         return f"{self.PREFIX_AGGREGATION}:{symbol}:{interval}"
     
     def write_aggregation(self, symbol: str, interval: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool:
-        """
-        Write aggregation (OHLCV) data to Redis.
-        
-        Args:
-            symbol: Trading pair symbol (e.g., BTCUSDT)
-            interval: Time interval (e.g., 1m, 5m, 1h)
-            data: Aggregation data dictionary
-            ttl: Time-to-live in seconds (optional)
-            
-        Returns:
-            True if successful
-        """
+        """Write aggregation (OHLCV) data to Redis."""
         try:
             key = self._make_aggregation_key(symbol, interval)
             # Convert all values to strings for Redis hash
@@ -223,16 +157,7 @@ class RedisStorage:
             return False
     
     def get_aggregation(self, symbol: str, interval: str = "1m") -> Optional[Dict[str, Any]]:
-        """
-        Get aggregation data from Redis.
-        
-        Args:
-            symbol: Trading pair symbol
-            interval: Time interval
-            
-        Returns:
-            Aggregation data dictionary or None
-        """
+        """Get aggregation data from Redis."""
         try:
             key = self._make_aggregation_key(symbol, interval)
             data = self.client.hgetall(key)
@@ -259,16 +184,7 @@ class RedisStorage:
             return None
     
     def write_aggregations_batch(self, aggregations: List[Dict[str, Any]], ttl: Optional[int] = None) -> int:
-        """
-        Write multiple aggregations in a batch.
-        
-        Args:
-            aggregations: List of aggregation dictionaries with 'symbol' and 'interval' keys
-            ttl: Time-to-live in seconds
-            
-        Returns:
-            Number of successful writes
-        """
+        """Write multiple aggregations in a batch."""
         success_count = 0
         pipe = self.client.pipeline()
         
@@ -296,8 +212,7 @@ class RedisStorage:
         symbol: str, 
         interval: str = "5m"
     ) -> List[Dict[str, Any]]:
-        """
-        Get recent 1m aggregations and combine into higher timeframe.
+        """Get recent 1m aggregations and combine into higher timeframe.
         
         Retrieves recent 1-minute aggregation data for a symbol and aggregates
         it into higher timeframe candles (5m, 15m) using in-memory Python logic.
@@ -305,16 +220,6 @@ class RedisStorage:
         Note: Redis only stores the latest candle per symbol/interval in this
         implementation, so this returns at most one aggregated candle from
         recent data when multiple 1m candles are available.
-        
-        Args:
-            symbol: Trading pair symbol (e.g., BTCUSDT)
-            interval: Target interval ("1m", "5m", or "15m")
-            
-        Returns:
-            List of aggregated candle dictionaries with OHLCV data.
-            Returns empty list if no data available.
-            
-        Requirements: 2.1, 2.4
         """
         # For 1m interval, just return the single aggregation if it exists
         if interval == "1m":
@@ -361,21 +266,11 @@ class RedisStorage:
         candles: List[Dict[str, Any]],
         interval: str = "5m"
     ) -> List[Dict[str, Any]]:
-        """
-        Aggregate a list of 1m candles into higher timeframe candles.
+        """Aggregate a list of 1m candles into higher timeframe candles.
         
         This is a utility method that performs in-memory aggregation of
         1-minute candles into higher timeframe candles (5m, 15m).
         Window boundaries align to clock time.
-        
-        Args:
-            candles: List of 1m candle dictionaries with timestamp, OHLCV data
-            interval: Target interval ("1m", "5m", or "15m")
-            
-        Returns:
-            List of aggregated candle dictionaries
-            
-        Requirements: 2.1, 2.4, 3.1-3.6
         """
         if not candles or interval == "1m":
             return candles if candles else []
@@ -453,10 +348,6 @@ class RedisStorage:
         
         return aggregated
     
-    # =========================================================================
-    # PRICE METHODS (from old RedisStorage)
-    # =========================================================================
-    
     def _make_price_key(self, symbol: str) -> str:
         """Create Redis key for latest price."""
         return f"{self.PREFIX_PRICE}:{symbol}"
@@ -499,10 +390,6 @@ class RedisStorage:
         """Get latest ticker data (alias for get_ticker for backward compatibility)."""
         return self.get_ticker(symbol)
 
-    # =========================================================================
-    # TICKER METHODS (from old RedisTickerStorage)
-    # =========================================================================
-    
     def _make_ticker_key(self, symbol: str) -> str:
         """Create Redis key for ticker data."""
         return f"{self.PREFIX_TICKER}:{symbol.upper()}"
@@ -558,16 +445,7 @@ class RedisStorage:
         }
     
     def write_ticker(self, symbol: str, data: Dict[str, Any]) -> bool:
-        """
-        Write ticker data to Redis.
-        
-        Args:
-            symbol: Trading pair symbol (e.g., BTCUSDT)
-            data: Ticker data (Binance format or storage format)
-            
-        Returns:
-            True if successful
-        """
+        """Write ticker data to Redis."""
         try:
             key = self._make_ticker_key(symbol)
             storage_data = self._transform_ticker_to_storage(symbol, data)
@@ -579,15 +457,7 @@ class RedisStorage:
             return False
     
     def get_ticker(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """
-        Get ticker data from Redis.
-        
-        Args:
-            symbol: Trading pair symbol
-            
-        Returns:
-            Ticker data dictionary or None
-        """
+        """Get ticker data from Redis."""
         try:
             key = self._make_ticker_key(symbol)
             data = self.client.hgetall(key)
@@ -599,12 +469,7 @@ class RedisStorage:
             return None
     
     def get_all_tickers(self) -> List[Dict[str, Any]]:
-        """
-        Get all ticker data from Redis.
-        
-        Returns:
-            List of ticker data dictionaries
-        """
+        """Get all ticker data from Redis."""
         try:
             pattern = f"{self.PREFIX_TICKER}:*"
             keys = self.client.keys(pattern)
@@ -627,26 +492,12 @@ class RedisStorage:
             logger.error(f"Failed to get all tickers: {e}")
             return []
 
-    # =========================================================================
-    # TRADE METHODS (from old RedisStorage)
-    # =========================================================================
-    
     def _make_trade_key(self, symbol: str) -> str:
         """Create Redis key for recent trades."""
         return f"{self.PREFIX_TRADE}:{symbol}"
     
     def write_recent_trade(self, symbol: str, trade: Dict[str, Any], max_trades: int = 100) -> bool:
-        """
-        Write a recent trade to Redis list.
-        
-        Args:
-            symbol: Trading pair symbol
-            trade: Trade data dictionary
-            max_trades: Maximum number of trades to keep
-            
-        Returns:
-            True if successful
-        """
+        """Write a recent trade to Redis list."""
         try:
             key = self._make_trade_key(symbol)
             trade_json = json.dumps(trade)
@@ -663,16 +514,7 @@ class RedisStorage:
             return False
     
     def get_recent_trades(self, symbol: str, limit: int = 100) -> List[Dict[str, Any]]:
-        """
-        Get recent trades from Redis.
-        
-        Args:
-            symbol: Trading pair symbol
-            limit: Maximum number of trades to return
-            
-        Returns:
-            List of trade dictionaries
-        """
+        """Get recent trades from Redis."""
         try:
             key = self._make_trade_key(symbol)
             trades_json = self.client.lrange(key, 0, limit - 1)
@@ -689,25 +531,12 @@ class RedisStorage:
             logger.error(f"Failed to get trades for {symbol}: {e}")
             return []
     
-    # =========================================================================
-    # ALERT METHODS (from old RedisStorage)
-    # =========================================================================
-    
     def _make_alert_key(self) -> str:
         """Create Redis key for alerts list."""
         return f"{self.PREFIX_ALERT}:recent"
     
     def write_alert(self, alert: Dict[str, Any], max_alerts: int = 1000) -> bool:
-        """
-        Write an alert to Redis.
-        
-        Args:
-            alert: Alert data dictionary
-            max_alerts: Maximum number of alerts to keep
-            
-        Returns:
-            True if successful
-        """
+        """Write an alert to Redis."""
         try:
             key = self._make_alert_key()
             
@@ -731,15 +560,7 @@ class RedisStorage:
             return False
     
     def get_recent_alerts(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """
-        Get recent alerts from Redis.
-        
-        Args:
-            limit: Maximum number of alerts to return
-            
-        Returns:
-            List of alert dictionaries
-        """
+        """Get recent alerts from Redis."""
         try:
             key = self._make_alert_key()
             alerts_json = self.client.lrange(key, 0, limit - 1)
@@ -764,16 +585,7 @@ class RedisStorage:
             return []
     
     def write_alerts_batch(self, alerts: List[Dict[str, Any]], max_alerts: int = 1000) -> int:
-        """
-        Write multiple alerts in a batch.
-        
-        Args:
-            alerts: List of alert dictionaries
-            max_alerts: Maximum number of alerts to keep
-            
-        Returns:
-            Number of successful writes
-        """
+        """Write multiple alerts in a batch."""
         if not alerts:
             return 0
         
@@ -799,10 +611,6 @@ class RedisStorage:
             logger.error(f"Failed to write alerts batch: {e}")
             return 0
 
-    # =========================================================================
-    # GENERIC WRITE METHODS (from old RedisConnector)
-    # =========================================================================
-    
     def write_to_redis(
         self,
         key: str,
@@ -810,18 +618,7 @@ class RedisStorage:
         data_type: str = "hash",
         ttl: Optional[int] = None,
     ) -> bool:
-        """
-        Generic write method supporting multiple Redis data types.
-        
-        Args:
-            key: Redis key
-            value: Data to write (dict for hash, list for list, str for string)
-            data_type: Type of Redis data structure ("hash", "list", "string")
-            ttl: Time-to-live in seconds (optional)
-            
-        Returns:
-            True if successful
-        """
+        """Generic write method supporting multiple Redis data types."""
         try:
             if data_type == "hash":
                 if not isinstance(value, dict):

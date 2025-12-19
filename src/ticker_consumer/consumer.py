@@ -1,9 +1,4 @@
-"""
-Ticker Consumer Module - Consolidated.
-
-Reads ticker messages from Kafka and writes to Redis with low latency.
-Contains all configuration, validation, filtering, and consumer logic.
-"""
+"""Ticker Consumer Module."""
 
 import json
 import logging
@@ -13,66 +8,58 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from src.utils.config import get_env_str, get_env_int, get_env_list, get_env_optional
+import os
+
 from src.utils.logging import setup_logging, get_logger
 from src.utils.metrics import record_message_processed, PROCESSING_LATENCY
 from src.utils.retry import ExponentialBackoff
 
 logger = get_logger(__name__)
 
-# Note: 'import logging' is kept for logging.getLogger("kafka").setLevel() in main()
-
-# Default symbols
 DEFAULT_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
     "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "MATICUSDT",
     "LINKUSDT", "LTCUSDT", "UNIUSDT", "ATOMUSDT", "SHIBUSDT",
 ]
 
-# Required fields for validation
 REQUIRED_FIELDS = {'s', 'c', 'p', 'P', 'o', 'h', 'l', 'v', 'q'}
 NUMERIC_FIELDS = {'c', 'p', 'P', 'o', 'h', 'l', 'v', 'q'}
 
 
 @dataclass
 class TickerConfig:
-    """Ticker consumer configuration."""
-    
-    # Kafka
     kafka_servers: str = "localhost:9092"
     kafka_topic: str = "raw_tickers"
     consumer_group: str = "ticker-consumer-group"
-    
-    # Redis
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
     redis_password: Optional[str] = None
     ticker_ttl: int = 60
-    
-    # Symbols
     symbols: List[str] = field(default_factory=lambda: DEFAULT_SYMBOLS.copy())
-    
-    # Late data
-    watermark_delay_ms: int = 10000  # 10 seconds
-    max_future_ms: int = 5000  # 5 seconds
+    watermark_delay_ms: int = 10000
+    max_future_ms: int = 5000
     
     @classmethod
     def from_env(cls) -> "TickerConfig":
         """Load config from environment variables."""
-        symbols = get_env_list("TICKER_SYMBOLS", DEFAULT_SYMBOLS.copy())
+        symbols_str = os.getenv("TICKER_SYMBOLS")
+        if symbols_str and symbols_str.strip():
+            symbols = [s.strip() for s in symbols_str.split(",") if s.strip()]
+        else:
+            symbols = DEFAULT_SYMBOLS.copy()
         return cls(
-            kafka_servers=get_env_str("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
-            kafka_topic=get_env_str("KAFKA_TICKER_TOPIC", "raw_tickers"),
-            consumer_group=get_env_str("TICKER_CONSUMER_GROUP", "ticker-consumer-group"),
-            redis_host=get_env_str("REDIS_HOST", "localhost"),
-            redis_port=get_env_int("REDIS_PORT", 6379),
-            redis_db=get_env_int("REDIS_DB", 0),
-            redis_password=get_env_optional("REDIS_PASSWORD"),
-            ticker_ttl=get_env_int("TICKER_TTL_SECONDS", 60),
+            kafka_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
+            kafka_topic=os.getenv("KAFKA_TICKER_TOPIC", "raw_tickers"),
+            consumer_group=os.getenv("TICKER_CONSUMER_GROUP", "ticker-consumer-group"),
+            redis_host=os.getenv("REDIS_HOST", "localhost"),
+            redis_port=int(os.getenv("REDIS_PORT", "6379")),
+            redis_db=int(os.getenv("REDIS_DB", "0")),
+            redis_password=os.getenv("REDIS_PASSWORD"),
+            ticker_ttl=int(os.getenv("TICKER_TTL_SECONDS", "60")),
             symbols=[s.upper() for s in symbols],
-            watermark_delay_ms=get_env_int("TICKER_WATERMARK_DELAY_MS", 10000),
-            max_future_ms=get_env_int("TICKER_MAX_FUTURE_MS", 5000),
+            watermark_delay_ms=int(os.getenv("TICKER_WATERMARK_DELAY_MS", "10000")),
+            max_future_ms=int(os.getenv("TICKER_MAX_FUTURE_MS", "5000")),
         )
     
     def log_config(self) -> None:
@@ -104,8 +91,6 @@ def validate_ticker(data: Dict[str, Any]) -> bool:
 
 
 class LateDataFilter:
-    """Simple late data filter using watermark and per-symbol tracking."""
-    
     def __init__(self, watermark_delay_ms: int = 10000, max_future_ms: int = 5000):
         self.watermark_delay_ms = watermark_delay_ms
         self.max_future_ms = max_future_ms
@@ -135,8 +120,6 @@ class LateDataFilter:
 
 
 class TickerConsumer:
-    """Core ticker consumer service."""
-    
     def __init__(self, config: TickerConfig):
         from src.storage.redis import RedisStorage
         

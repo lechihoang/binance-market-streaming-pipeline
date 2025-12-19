@@ -1,25 +1,4 @@
-"""
-Prometheus metrics utilities for production monitoring.
-
-Provides:
-- Shared metrics registry to avoid duplicate registration
-- Pre-defined metrics for common patterns (requests, errors, latency)
-- Helper functions for recording metrics
-- Labels for multi-dimensional metrics
-
-Usage:
-    from src.utils.metrics import (
-        record_request, record_error, record_latency,
-        REQUESTS_TOTAL, ERRORS_TOTAL, LATENCY_HISTOGRAM
-    )
-
-Requirements Coverage:
----------------------
-    - Requirement 5.1: Shared Counter, Gauge, and Histogram metrics
-    - Requirement 5.2: Consistent naming convention (app_*_total, app_*_seconds)
-    - Requirement 5.3: Helper functions for recording metrics
-    - Requirement 5.4: Latency tracking utilities
-"""
+"""Prometheus metrics utilities for production monitoring."""
 
 from contextlib import contextmanager
 from functools import wraps
@@ -61,25 +40,18 @@ except ImportError:
 T = TypeVar("T")
 
 
-# ============================================================================
-# SHARED METRICS DEFINITIONS
-# ============================================================================
-
-# Request metrics
 REQUESTS_TOTAL = Counter(
     'app_requests_total',
     'Total number of requests',
     ['service', 'endpoint', 'method', 'status']
 )
 
-# Error metrics
 ERRORS_TOTAL = Counter(
     'app_errors_total',
     'Total number of errors',
     ['service', 'error_type', 'severity']
 )
 
-# Latency metrics
 LATENCY_HISTOGRAM = Histogram(
     'app_latency_seconds',
     'Request latency in seconds',
@@ -87,14 +59,12 @@ LATENCY_HISTOGRAM = Histogram(
     buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
 )
 
-# Connection metrics
 CONNECTIONS_ACTIVE = Gauge(
     'app_connections_active',
     'Number of active connections',
     ['service', 'backend']
 )
 
-# Processing metrics
 MESSAGES_PROCESSED = Counter(
     'app_messages_processed_total',
     'Total messages processed',
@@ -108,7 +78,6 @@ PROCESSING_LATENCY = Histogram(
     buckets=[1, 5, 10, 25, 50, 100, 250, 500, 1000]
 )
 
-# Retry metrics
 RETRY_ATTEMPTS = Counter(
     'app_retry_attempts_total',
     'Total retry attempts',
@@ -116,24 +85,12 @@ RETRY_ATTEMPTS = Counter(
 )
 
 
-# ============================================================================
-# HELPER FUNCTIONS FOR RECORDING METRICS
-# ============================================================================
-
 def record_request(
     service: str,
     endpoint: str,
     method: str = "GET",
     status: str = "success"
 ) -> None:
-    """Record a request metric.
-    
-    Args:
-        service: Name of the service (e.g., "api", "storage")
-        endpoint: The endpoint being called (e.g., "/health", "/query")
-        method: HTTP method (e.g., "GET", "POST")
-        status: Request status ("success", "error", "timeout")
-    """
     REQUESTS_TOTAL.labels(
         service=service,
         endpoint=endpoint,
@@ -147,13 +104,6 @@ def record_error(
     error_type: str,
     severity: str = "error"
 ) -> None:
-    """Record an error metric.
-    
-    Args:
-        service: Name of the service (e.g., "api", "storage")
-        error_type: Type of error (e.g., "connection_error", "timeout")
-        severity: Error severity ("warning", "error", "critical")
-    """
     ERRORS_TOTAL.labels(
         service=service,
         error_type=error_type,
@@ -166,13 +116,6 @@ def record_latency(
     operation: str,
     latency_seconds: float
 ) -> None:
-    """Record a latency metric.
-    
-    Args:
-        service: Name of the service (e.g., "api", "storage")
-        operation: The operation being measured (e.g., "query", "write")
-        latency_seconds: Latency in seconds
-    """
     LATENCY_HISTOGRAM.labels(
         service=service,
         operation=operation
@@ -184,13 +127,6 @@ def record_message_processed(
     topic: str,
     status: str = "success"
 ) -> None:
-    """Record a message processing metric.
-    
-    Args:
-        service: Name of the service (e.g., "ticker_consumer", "connector")
-        topic: The topic/queue being processed
-        status: Processing status ("success", "error", "skipped")
-    """
     MESSAGES_PROCESSED.labels(
         service=service,
         topic=topic,
@@ -203,13 +139,6 @@ def record_retry(
     operation: str,
     result: str
 ) -> None:
-    """Record a retry attempt metric.
-    
-    Args:
-        service: Name of the service (e.g., "storage", "connector")
-        operation: The operation being retried (e.g., "connect", "query")
-        result: Retry result ("success", "failed", "exhausted")
-    """
     RETRY_ATTEMPTS.labels(
         service=service,
         operation=operation,
@@ -222,13 +151,6 @@ def set_active_connections(
     backend: str,
     count: int
 ) -> None:
-    """Set the number of active connections.
-    
-    Args:
-        service: Name of the service (e.g., "storage", "api")
-        backend: The backend type (e.g., "postgres", "redis", "minio")
-        count: Number of active connections
-    """
     CONNECTIONS_ACTIVE.labels(
         service=service,
         backend=backend
@@ -239,12 +161,6 @@ def increment_active_connections(
     service: str,
     backend: str
 ) -> None:
-    """Increment the number of active connections by 1.
-    
-    Args:
-        service: Name of the service
-        backend: The backend type
-    """
     CONNECTIONS_ACTIVE.labels(
         service=service,
         backend=backend
@@ -255,40 +171,14 @@ def decrement_active_connections(
     service: str,
     backend: str
 ) -> None:
-    """Decrement the number of active connections by 1.
-    
-    Args:
-        service: Name of the service
-        backend: The backend type
-    """
     CONNECTIONS_ACTIVE.labels(
         service=service,
         backend=backend
     ).dec()
 
 
-# ============================================================================
-# LATENCY TRACKING UTILITIES
-# ============================================================================
-
 @contextmanager
 def track_latency(service: str, operation: str):
-    """Context manager to track operation latency.
-    
-    Automatically records the latency of the wrapped code block
-    to the LATENCY_HISTOGRAM metric.
-    
-    Args:
-        service: Name of the service (e.g., "storage", "api")
-        operation: The operation being measured (e.g., "query", "write")
-    
-    Usage:
-        with track_latency("storage", "query"):
-            result = db.query(...)
-    
-    Yields:
-        None
-    """
     start = time.perf_counter()
     try:
         yield
@@ -301,28 +191,6 @@ def track_latency_decorator(
     service: str,
     operation: Optional[str] = None
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
-    """Decorator to track function latency.
-    
-    Automatically records the latency of the decorated function
-    to the LATENCY_HISTOGRAM metric.
-    
-    Args:
-        service: Name of the service (e.g., "storage", "api")
-        operation: The operation name. If None, uses the function name.
-    
-    Returns:
-        Decorator function
-    
-    Usage:
-        @track_latency_decorator("storage", "query")
-        def query_data():
-            ...
-        
-        # Or use function name as operation:
-        @track_latency_decorator("storage")
-        def my_operation():
-            ...
-    """
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         op_name = operation if operation is not None else func.__name__
         
@@ -338,22 +206,6 @@ def track_latency_decorator(
 
 @contextmanager
 def track_processing_latency(service: str, operation: str):
-    """Context manager to track processing latency in milliseconds.
-    
-    Similar to track_latency but records to PROCESSING_LATENCY
-    histogram which uses millisecond buckets.
-    
-    Args:
-        service: Name of the service
-        operation: The operation being measured
-    
-    Usage:
-        with track_processing_latency("ticker_consumer", "process_message"):
-            process_message(msg)
-    
-    Yields:
-        None
-    """
     start = time.perf_counter()
     try:
         yield
@@ -369,20 +221,6 @@ def track_processing_latency_decorator(
     service: str,
     operation: Optional[str] = None
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
-    """Decorator to track function processing latency in milliseconds.
-    
-    Args:
-        service: Name of the service
-        operation: The operation name. If None, uses the function name.
-    
-    Returns:
-        Decorator function
-    
-    Usage:
-        @track_processing_latency_decorator("ticker_consumer", "process")
-        def process_message(msg):
-            ...
-    """
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         op_name = operation if operation is not None else func.__name__
         

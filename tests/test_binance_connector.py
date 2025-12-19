@@ -11,10 +11,6 @@ Table of Contents:
 Requirements: 6.1
 """
 
-# ============================================================================
-# IMPORTS AND SETUP
-# ============================================================================
-
 import pytest
 import asyncio
 import json
@@ -36,10 +32,6 @@ from src.binance_kafka_connector.connector import (
 )
 from src.utils.retry import ExponentialBackoff
 
-
-# ============================================================================
-# WEBSOCKET CLIENT TESTS
-# ============================================================================
 
 class TestWebSocketClient:
     """Tests for BinanceWebSocketClient functionality."""
@@ -144,10 +136,6 @@ class TestWebSocketClient:
         assert client.websocket is None
 
 
-# ============================================================================
-# MESSAGE PROCESSOR TESTS
-# ============================================================================
-
 class TestMessageProcessor:
     """Tests for process_message functionality."""
     
@@ -234,10 +222,6 @@ class TestMessageProcessor:
         assert result is None
 
 
-# ============================================================================
-# KAFKA PRODUCER TESTS
-# ============================================================================
-
 class TestKafkaProducer:
     """Tests for KafkaProducerClient functionality."""
     
@@ -246,10 +230,6 @@ class TestKafkaProducer:
         # Kafka producer tests require actual Kafka connection or more complex mocking
         assert True
 
-
-# ============================================================================
-# CONFIG TESTS
-# ============================================================================
 
 class TestConfig:
     """Tests for module-level configuration constants."""

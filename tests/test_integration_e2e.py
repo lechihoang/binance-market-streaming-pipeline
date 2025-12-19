@@ -22,10 +22,6 @@ from src.storage.minio import MinioStorage
 from src.storage.storage_writer import StorageWriter, BatchResult
 
 
-# ============================================================================
-# ENVIRONMENT CHECKS
-# ============================================================================
-
 def is_redis_available():
     """Check if Redis is available for testing."""
     try:
@@ -103,10 +99,6 @@ skip_if_no_docker = pytest.mark.skipif(
 )
 
 
-# ============================================================================
-# FIXTURES
-# ============================================================================
-
 @pytest.fixture
 def redis_storage():
     """Create RedisStorage instance for testing."""
@@ -160,10 +152,6 @@ def storage_writer(redis_storage, postgres_storage, minio_storage):
     )
 
 
-# ============================================================================
-# TEST DATA GENERATORS
-# ============================================================================
-
 def generate_aggregation_records(count: int = 10, symbol: str = "BTCUSDT") -> List[Dict[str, Any]]:
     """Generate test aggregation records."""
     base_time = datetime.now()
@@ -208,10 +196,6 @@ def generate_alert_records(count: int = 5, symbol: str = "BTCUSDT") -> List[Dict
     
     return records
 
-
-# ============================================================================
-# REDIS BATCH TESTS
-# ============================================================================
 
 @skip_if_no_redis
 class TestRedisBatchOperations:
@@ -268,10 +252,6 @@ class TestRedisBatchOperations:
         assert len(failed) == 0
 
 
-# ============================================================================
-# POSTGRESQL BATCH TESTS
-# ============================================================================
-
 @skip_if_no_postgres
 class TestPostgresBatchOperations:
     """Test PostgreSQL batch write operations."""
@@ -316,10 +296,6 @@ class TestPostgresBatchOperations:
         assert row_count == 0
 
 
-# ============================================================================
-# MINIO BATCH TESTS
-# ============================================================================
-
 @skip_if_no_minio
 class TestMinioBatchOperations:
     """Test MinIO batch write operations."""
@@ -362,10 +338,6 @@ class TestMinioBatchOperations:
         assert success_count == 0
         assert len(failed_symbols) == 0
 
-
-# ============================================================================
-# STORAGE WRITER INTEGRATION TESTS
-# ============================================================================
 
 @skip_if_no_docker
 class TestStorageWriterIntegration:
@@ -468,10 +440,6 @@ class TestStorageWriterIntegration:
         assert result.tier_results["cold"] is True
 
 
-# ============================================================================
-# DATA FLOW VERIFICATION TESTS
-# ============================================================================
-
 @skip_if_no_docker
 class TestDataFlowVerification:
     """Verify data flows correctly through all storage tiers."""
@@ -515,10 +483,6 @@ class TestDataFlowVerification:
             redis_data = redis_storage.get_aggregation(symbol, "1m")
             assert redis_data is not None, f"Redis should have data for {symbol}"
 
-
-# ============================================================================
-# LATENCY MEASUREMENT TESTS
-# ============================================================================
 
 @skip_if_no_docker
 class TestLatencyMeasurement:

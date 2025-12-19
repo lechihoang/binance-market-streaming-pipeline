@@ -1,18 +1,4 @@
-"""
-Trade Aggregation Job
-
-Aggregates raw trade data into OHLCV candles with multiple time windows.
-Reads from raw_trades Kafka topic, computes aggregations, and writes to
-multiple sinks (Kafka, Redis, Parquet).
-
-Inherits from BaseSparkJob for common functionality:
-- Logging setup with StructuredFormatter
-- Signal handling for graceful shutdown
-- SparkSession creation with consistent configuration
-- Memory monitoring and batch metrics
-- StorageWriter initialization for 3-tier storage
-- Cleanup logic
-"""
+"""Trade Aggregation Job."""
 
 import time
 
@@ -27,7 +13,6 @@ from pyspark.sql.types import (
     LongType, BooleanType, TimestampType
 )
 
-from src.utils.config import Config
 from src.streaming.base_spark_job import BaseSparkJob
 
 # Import metrics utilities for production monitoring
@@ -39,40 +24,13 @@ from src.utils.metrics import (
 
 
 class TradeAggregationJob(BaseSparkJob):
-    """
-    Spark Structured Streaming job for aggregating raw trades into OHLCV candles.
-    
-    Processes trades from Kafka, creates 1-minute tumbling windows,
-    computes aggregations and derived metrics, and writes to multiple sinks.
-    
-    Inherits from BaseSparkJob for common functionality:
-    - SparkSession creation
-    - Logging setup
-    - Batch metrics logging
-    - Memory monitoring
-    - Signal handling for graceful shutdown
-    - StorageWriter initialization
-    - Cleanup logic
-    """
-
-    def __init__(self, config: Config):
-        """
-        Initialize Trade Aggregation Job.
-        
-        Args:
-            config: Configuration object with Kafka, Spark, Redis, PostgreSQL, MinIO settings
-        """
-        super().__init__(config, job_name="TradeAggregationJob")
+    def __init__(self):
+        super().__init__(job_name="TradeAggregationJob")
 
     def create_stream_reader(self) -> DataFrame:
-        """
-        Create Kafka stream reader for raw_trades topic.
-        
-        Returns:
-            DataFrame with raw Kafka messages
-        """
-        self.logger.info(f"Creating stream reader for topic: {self.config.kafka.topic_raw_trades}")
-        self.logger.info(f"Kafka bootstrap servers: {self.config.kafka.bootstrap_servers}")
+        """Create Kafka stream reader for raw_trades topic."""
+        self.logger.info(f"Creating stream reader for topic: {self.kafka_topic_raw_trades}")
+        self.logger.info(f"Kafka bootstrap servers: {self.kafka_bootstrap_servers}")
         
         try:
             # Use "earliest" so checkpoint can track progress
@@ -80,11 +38,11 @@ class TradeAggregationJob(BaseSparkJob):
             # This ensures no data is lost when job is temporarily stopped
             df = (self.spark.readStream
                   .format("kafka")
-                  .option("kafka.bootstrap.servers", self.config.kafka.bootstrap_servers)
-                  .option("subscribe", self.config.kafka.topic_raw_trades)
+                  .option("kafka.bootstrap.servers", self.kafka_bootstrap_servers)
+                  .option("subscribe", self.kafka_topic_raw_trades)
                   .option("startingOffsets", "earliest")
                   .option("maxOffsetsPerTrigger", 
-                         str(self.config.kafka.max_rate_per_partition * 10))
+                         str(self.kafka_max_rate_per_partition * 10))
                   .load())
             
             self.logger.info("Stream reader created successfully")
@@ -92,20 +50,12 @@ class TradeAggregationJob(BaseSparkJob):
             
         except Exception as e:
             self.logger.error(f"Failed to create stream reader: {str(e)}", 
-                            extra={"topic": self.config.kafka.topic_raw_trades,
+                            extra={"topic": self.kafka_topic_raw_trades,
                                    "error": str(e)})
             raise
     
     def parse_trades(self, df: DataFrame) -> DataFrame:
-        """
-        Parse JSON trade messages and extract fields.
-        
-        Args:
-            df: Raw Kafka DataFrame
-            
-        Returns:
-            DataFrame with parsed trade fields and watermark
-        """
+        """Parse JSON trade messages and extract fields."""
         # Define schema for Binance connector EnrichedMessage format
         # Must match fields from EnrichedMessage in binance_kafka_connector/models.py
         # Note: spark.sql.caseSensitive=true is enabled to distinguish e/E and t/T fields
@@ -167,15 +117,7 @@ class TradeAggregationJob(BaseSparkJob):
             raise
 
     def aggregate_trades(self, df: DataFrame) -> DataFrame:
-        """
-        Create 1-minute OHLCV candles with derived metrics from parsed trades.
-        
-        Args:
-            df: Parsed trades DataFrame with watermark
-            
-        Returns:
-            DataFrame with OHLCV aggregations and derived metrics (VWAP, price_change_pct, buy_sell_ratio)
-        """
+        """Create 1-minute OHLCV candles with derived metrics from parsed trades."""
         return (df
             .groupBy(
                 window(col("event_time"), "1 minute").alias("window"),
@@ -218,20 +160,7 @@ class TradeAggregationJob(BaseSparkJob):
         )
 
     def write_to_sinks(self, batch_df: DataFrame, batch_id: int) -> None:
-        """
-        Write batch to multiple sinks using StorageWriter for 3-tier storage.
-        
-        Writes to:
-        - Kafka (for downstream consumers)
-        - Redis, PostgreSQL, MinIO (via StorageWriter for 3-tier storage)
-        
-        If shutdown is requested during processing, raises exception to prevent
-        Spark from committing offset. Batch will be replayed on restart.
-        
-        Args:
-            batch_df: Batch DataFrame to write
-            batch_id: Batch identifier
-        """
+        """Write batch to multiple sinks using StorageWriter for 3-tier storage."""
         start_time = time.time()
         
         # Check shutdown before starting
@@ -275,15 +204,15 @@ class TradeAggregationJob(BaseSparkJob):
             
             kafka_df.write \
                 .format("kafka") \
-                .option("kafka.bootstrap.servers", self.config.kafka.bootstrap_servers) \
-                .option("topic", self.config.kafka.topic_processed_aggregations) \
-                .option("kafka.enable.idempotence", str(self.config.kafka.enable_idempotence).lower()) \
-                .option("kafka.acks", self.config.kafka.acks) \
+                .option("kafka.bootstrap.servers", self.kafka_bootstrap_servers) \
+                .option("topic", self.kafka_topic_processed_aggregations) \
+                .option("kafka.enable.idempotence", str(self.kafka_enable_idempotence).lower()) \
+                .option("kafka.acks", self.kafka_acks) \
                 .option("kafka.max.in.flight.requests.per.connection", 
-                       str(self.config.kafka.max_in_flight_requests_per_connection)) \
+                       str(self.kafka_max_in_flight_requests)) \
                 .save()
             
-            self.logger.debug(f"Batch {batch_id}: Wrote to Kafka topic {self.config.kafka.topic_processed_aggregations}")
+            self.logger.debug(f"Batch {batch_id}: Wrote to Kafka topic {self.kafka_topic_processed_aggregations}")
         except Exception as e:
             self.logger.error(f"Batch {batch_id}: Failed to write to Kafka: {str(e)}")
         
@@ -336,16 +265,7 @@ class TradeAggregationJob(BaseSparkJob):
         )
 
     def run(self) -> None:
-        """
-        Run the Trade Aggregation streaming job.
-        
-        Creates Spark session, initializes StorageWriter for 3-tier storage,
-        reads from Kafka, processes trades, and writes to multiple sinks.
-        
-        The job will automatically stop when:
-        - max_runtime_seconds is exceeded (default 5 minutes)
-        - empty_batch_threshold consecutive empty batches are received (default 3)
-        """
+        """Run the Trade Aggregation streaming job."""
         try:
             # Create Spark session (using inherited method)
             self.spark = self._create_spark_session()
@@ -364,7 +284,7 @@ class TradeAggregationJob(BaseSparkJob):
             self.start_time = time.time()
             
             self.logger.info("Trade Aggregation Job started successfully (micro-batch mode)")
-            self.logger.info(f"Reading from topic: {self.config.kafka.topic_raw_trades}")
+            self.logger.info(f"Reading from topic: {self.kafka_topic_raw_trades}")
             self.logger.info("Writing to 3-tier storage: Redis (hot), PostgreSQL (warm), MinIO (cold)")
             self.logger.info(f"Auto-stop config: max_runtime={self.max_runtime_seconds}s, empty_batch_threshold={self.empty_batch_threshold}")
             self.logger.info(f"Graceful shutdown timeout: {self.graceful_shutdown.graceful_shutdown_timeout}s")
@@ -377,7 +297,7 @@ class TradeAggregationJob(BaseSparkJob):
                     .foreachBatch(self.write_to_sinks)
                     .outputMode("update")
                     .trigger(processingTime='60 seconds')
-                    .option("checkpointLocation", self.config.spark.checkpoint_location)
+                    .option("checkpointLocation", self.spark_checkpoint_location)
                     .start())
             
             self.query = query
@@ -409,9 +329,7 @@ class TradeAggregationJob(BaseSparkJob):
 
 
 def main():
-    """Main entry point for Trade Aggregation Job."""
-    config = Config.from_env("TradeAggregationJob")
-    job = TradeAggregationJob(config)
+    job = TradeAggregationJob()
     job.run()
 
 

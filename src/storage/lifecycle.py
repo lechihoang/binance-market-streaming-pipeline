@@ -1,9 +1,4 @@
-"""
-Storage lifecycle management module.
-
-Provides automated cleanup, compaction, and retention policies for the
-multi-tier storage system (Redis, PostgreSQL, MinIO).
-"""
+"""Storage lifecycle management - cleanup, compaction, and retention policies."""
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -12,17 +7,6 @@ from typing import List, Optional, Dict, Any
 
 @dataclass
 class LifecycleConfig:
-    """Configuration for lifecycle management operations.
-    
-    Attributes:
-        postgres_retention_days: Days to retain data in PostgreSQL (default: 90)
-        minio_retention_days: Days to retain data in MinIO (default: 365)
-        compaction_min_files: Minimum batch files before compaction (default: 2)
-        cleanup_batch_size: Records per batch for PostgreSQL cleanup (default: 1000)
-        enabled_tiers: List of storage tiers to manage (default: ["postgres", "minio"])
-    
-    Requirements: 4.1
-    """
     postgres_retention_days: int = 90
     minio_retention_days: int = 365
     compaction_min_files: int = 2
@@ -32,16 +16,6 @@ class LifecycleConfig:
 
 @dataclass
 class CleanupResult:
-    """Result of a cleanup operation.
-    
-    Attributes:
-        tier: Storage tier that was cleaned (e.g., "postgres", "minio")
-        records_deleted: Number of records/files deleted
-        bytes_reclaimed: Bytes of storage reclaimed
-        duration_ms: Operation duration in milliseconds
-        success: Whether the operation completed successfully
-        error: Error message if operation failed
-    """
     tier: str
     records_deleted: int
     bytes_reclaimed: int
@@ -52,18 +26,6 @@ class CleanupResult:
 
 @dataclass
 class CompactionResult:
-    """Result of a compaction operation.
-    
-    Attributes:
-        partitions_processed: Number of partitions that were compacted
-        files_merged: Total number of files merged
-        files_deleted: Number of original batch files deleted
-        bytes_before: Total bytes before compaction
-        bytes_after: Total bytes after compaction
-        duration_ms: Operation duration in milliseconds
-        success: Whether the operation completed successfully
-        errors: List of error messages for any failed partitions
-    """
     partitions_processed: int
     files_merged: int
     files_deleted: int
@@ -76,15 +38,6 @@ class CompactionResult:
 
 @dataclass
 class LifecycleResult:
-    """Aggregated result of all lifecycle operations.
-    
-    Attributes:
-        postgres_cleanup: Result of PostgreSQL retention cleanup
-        minio_compaction: Result of MinIO file compaction
-        minio_retention: Result of MinIO retention cleanup
-        total_duration_ms: Total duration of all operations in milliseconds
-        success: Whether all operations completed successfully
-    """
     postgres_cleanup: Optional[CleanupResult]
     minio_compaction: Optional[CompactionResult]
     minio_retention: Optional[CleanupResult]
@@ -94,16 +47,6 @@ class LifecycleResult:
 
 @dataclass
 class TierStatus:
-    """Status of a single storage tier's last cleanup.
-    
-    Attributes:
-        tier: Storage tier name (e.g., "postgres", "minio_compaction", "minio_retention")
-        last_run: Timestamp of last cleanup run (ISO format)
-        success: Whether the last run was successful
-        records_affected: Number of records/files affected
-        bytes_reclaimed: Bytes reclaimed (if applicable)
-        error: Error message if last run failed
-    """
     tier: str
     last_run: Optional[str]
     success: bool
@@ -114,15 +57,6 @@ class TierStatus:
 
 @dataclass
 class LifecycleStatus:
-    """Overall lifecycle status for health check endpoint.
-    
-    Attributes:
-        last_run: Timestamp of last lifecycle run (ISO format)
-        overall_success: Whether the last run was fully successful
-        tiers: Status for each storage tier
-        
-    Requirements: 5.3
-    """
     last_run: Optional[str]
     overall_success: bool
     tiers: List[TierStatus] = field(default_factory=list)
@@ -144,18 +78,7 @@ logger = get_logger(__name__)
 
 
 class LifecycleManager:
-    """Main coordinator for all lifecycle operations.
-    
-    Orchestrates cleanup, compaction, and retention operations across
-    PostgreSQL and MinIO storage tiers.
-    
-    Attributes:
-        postgres: PostgresStorage instance for warm tier operations
-        minio: MinioStorage instance for cold tier operations
-        config: LifecycleConfig with retention and compaction settings
-        
-    Requirements: 4.2, 4.3
-    """
+    """Main coordinator for all lifecycle operations."""
     
     def __init__(
         self,
@@ -163,20 +86,11 @@ class LifecycleManager:
         minio: MinioStorage,
         config: Optional[LifecycleConfig] = None
     ):
-        """Initialize LifecycleManager with storage instances and configuration.
-        
-        Args:
-            postgres: PostgresStorage instance for warm tier operations
-            minio: MinioStorage instance for cold tier operations
-            config: LifecycleConfig with retention settings (uses defaults if None)
-            
-        Requirements: 4.3
-        """
+        """Initialize LifecycleManager with storage instances and configuration."""
         self.postgres = postgres
         self.minio = minio
         self.config = config or LifecycleConfig()
         
-        # Lock to prevent concurrent execution (Requirement 4.3)
         self._lock = threading.Lock()
         self._running = False
         
@@ -188,16 +102,7 @@ class LifecycleManager:
         )
 
     def run_postgres_cleanup(self) -> CleanupResult:
-        """Run PostgreSQL retention cleanup.
-        
-        Deletes records older than the configured retention period from
-        all PostgreSQL tables (trades_1m, indicators, alerts).
-        
-        Returns:
-            CleanupResult with deletion statistics
-            
-        Requirements: 2.1, 2.2, 2.3, 5.1
-        """
+        """Run PostgreSQL retention cleanup."""
         start_time = time.perf_counter()
         
         try:
@@ -210,7 +115,6 @@ class LifecycleManager:
             total_deleted = sum(results.values())
             duration_ms = (time.perf_counter() - start_time) * 1000
             
-            # Emit metrics (Requirement 5.1)
             MESSAGES_PROCESSED.labels(
                 service="lifecycle_manager",
                 topic="postgres_cleanup",
@@ -246,16 +150,7 @@ class LifecycleManager:
             )
 
     def run_minio_compaction(self) -> CompactionResult:
-        """Run MinIO file compaction.
-        
-        Finds partitions with multiple batch files and merges them into
-        single consolidated files.
-        
-        Returns:
-            CompactionResult with compaction statistics
-            
-        Requirements: 1.1, 1.2, 5.1
-        """
+        """Run MinIO file compaction."""
         start_time = time.perf_counter()
         
         total_partitions = 0
@@ -295,7 +190,6 @@ class LifecycleManager:
             
             duration_ms = (time.perf_counter() - start_time) * 1000
             
-            # Emit metrics (Requirement 5.1)
             MESSAGES_PROCESSED.labels(
                 service="lifecycle_manager",
                 topic="minio_compaction",
@@ -339,16 +233,7 @@ class LifecycleManager:
             )
 
     def run_minio_retention(self) -> CleanupResult:
-        """Run MinIO retention cleanup.
-        
-        Deletes Parquet files older than the configured retention period
-        for all data types (klines, indicators, alerts).
-        
-        Returns:
-            CleanupResult with deletion statistics
-            
-        Requirements: 3.1, 5.1
-        """
+        """Run MinIO retention cleanup."""
         start_time = time.perf_counter()
         
         total_files_deleted = 0
@@ -378,7 +263,6 @@ class LifecycleManager:
             
             duration_ms = (time.perf_counter() - start_time) * 1000
             
-            # Emit metrics (Requirement 5.1)
             MESSAGES_PROCESSED.labels(
                 service="lifecycle_manager",
                 topic="minio_retention",
@@ -416,20 +300,7 @@ class LifecycleManager:
             )
 
     def run_all(self) -> LifecycleResult:
-        """Execute all lifecycle operations in sequence.
-        
-        Runs PostgreSQL cleanup, MinIO compaction, and MinIO retention
-        in order. Handles partial failures gracefully - if one operation
-        fails, the others still execute.
-        
-        Uses a lock to prevent concurrent execution.
-        
-        Returns:
-            LifecycleResult with aggregated results from all operations
-            
-        Requirements: 4.2, 4.3, 5.2
-        """
-        # Check if already running (Requirement 4.3)
+        """Execute all lifecycle operations in sequence."""
         if not self._lock.acquire(blocking=False):
             logger.warning(
                 "Lifecycle job already running, skipping this execution"
@@ -486,7 +357,6 @@ class LifecycleManager:
                     f"in {total_duration_ms:.2f}ms"
                 )
             else:
-                # Emit error metric for partial failures (Requirement 5.2)
                 record_error("lifecycle_manager", "partial_failure", "warning")
                 logger.warning(
                     f"Lifecycle operations completed with some failures "
@@ -519,10 +389,6 @@ class LifecycleManager:
             self._lock.release()
 
 
-# ============================================================================
-# LIFECYCLE STATUS STORAGE
-# ============================================================================
-
 # Redis key for storing lifecycle status
 LIFECYCLE_STATUS_KEY = "lifecycle:status"
 LIFECYCLE_STATUS_TTL = 86400 * 7  # 7 days
@@ -532,17 +398,7 @@ def store_lifecycle_status(
     redis_client,
     result: LifecycleResult,
 ) -> bool:
-    """Store lifecycle status in Redis for health check endpoint.
-    
-    Args:
-        redis_client: Redis client instance
-        result: LifecycleResult from run_all()
-        
-    Returns:
-        True if status was stored successfully
-        
-    Requirements: 5.3
-    """
+    """Store lifecycle status in Redis for health check endpoint."""
     import json
     
     try:
@@ -604,16 +460,7 @@ def store_lifecycle_status(
 
 
 def get_lifecycle_status(redis_client) -> LifecycleStatus:
-    """Retrieve lifecycle status from Redis for health check endpoint.
-    
-    Args:
-        redis_client: Redis client instance
-        
-    Returns:
-        LifecycleStatus with last cleanup information
-        
-    Requirements: 5.3
-    """
+    """Retrieve lifecycle status from Redis for health check endpoint."""
     import json
     
     try:

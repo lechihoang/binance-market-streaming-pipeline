@@ -1,9 +1,4 @@
-"""
-PostgreSQL storage module for warm path data access.
-
-Provides sub-second latency access to 90 days of historical data.
-Tables: trades_1m, indicators, alerts
-"""
+"""PostgreSQL storage module for warm path data access."""
 
 import json
 from contextlib import contextmanager
@@ -22,13 +17,6 @@ logger = get_logger(__name__)
 
 
 class PostgresStorage:
-    """PostgreSQL storage for interactive analytics (Warm Path).
-    
-    Stores 90 days of historical data with sub-second query latency.
-    Supports concurrent writes from multiple Spark jobs.
-    Tables: trades_1m, indicators, alerts
-    """
-
     def __init__(
         self,
         host: str = "localhost",
@@ -65,7 +53,6 @@ class PostgresStorage:
 
 
     def _connect_with_retry(self) -> None:
-        """Create connection pool with retry logic."""
         def create_pool():
             self._pool = pool.ThreadedConnectionPool(
                 self.min_connections,
@@ -95,7 +82,6 @@ class PostgresStorage:
 
     @contextmanager
     def _get_connection(self):
-        """Get a connection from the pool with automatic return."""
         conn = None
         try:
             conn = self._pool.getconn()
@@ -115,7 +101,6 @@ class PostgresStorage:
         params: tuple = None,
         fetch: bool = False
     ) -> Optional[List[Dict[str, Any]]]:
-        """Execute a query with retry logic."""
         def execute_query():
             with self._get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -142,7 +127,6 @@ class PostgresStorage:
             raise
 
     def _init_tables(self) -> None:
-        """Create tables and indexes if they don't exist."""
         with self._get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -193,7 +177,8 @@ class PostgresStorage:
                         alert_type VARCHAR(50) NOT NULL,
                         severity VARCHAR(20) NOT NULL,
                         message TEXT,
-                        metadata JSONB
+                        metadata JSONB,
+                        UNIQUE (timestamp, symbol, alert_type)
                     )
                 """)
                 cur.execute("""
@@ -203,16 +188,12 @@ class PostgresStorage:
         logger.debug("PostgreSQL tables initialized")
 
     def close(self) -> None:
-        """Close the connection pool."""
         if self._pool:
             self._pool.closeall()
             logger.info("PostgreSQL connection pool closed")
 
 
-    # ==================== Upsert Operations ====================
-
     def upsert_candle(self, candle: Dict[str, Any]) -> None:
-        """Upsert a 1-minute candle record."""
         query = """
             INSERT INTO trades_1m 
             (timestamp, symbol, open, high, low, close, volume, quote_volume, trades_count, buy_count, sell_count)
@@ -233,7 +214,6 @@ class PostgresStorage:
         self._execute_with_retry(query, params)
 
     def upsert_indicators(self, indicators: Dict[str, Any]) -> None:
-        """Upsert technical indicators record."""
         query = """
             INSERT INTO indicators
             (timestamp, symbol, rsi, macd, macd_signal, sma_20, ema_12, ema_26, 
@@ -253,7 +233,6 @@ class PostgresStorage:
         self._execute_with_retry(query, params)
 
     def insert_alert(self, alert: Dict[str, Any]) -> None:
-        """Insert an alert record."""
         metadata = alert.get('metadata')
         if isinstance(metadata, dict):
             metadata = json.dumps(metadata)
@@ -270,23 +249,8 @@ class PostgresStorage:
         )
         self._execute_with_retry(query, params)
 
-    # ==================== Batch Operations ====================
-
     def upsert_candles_batch(self, candles: List[Dict[str, Any]]) -> int:
-        """Batch upsert candles using executemany.
-        
-        Uses INSERT with ON CONFLICT for efficient batch upsert operations.
-        
-        Args:
-            candles: List of candle dictionaries with keys:
-                timestamp, symbol, open, high, low, close, volume, 
-                quote_volume, trades_count, buy_count, sell_count
-                
-        Returns:
-            Number of affected rows (inserts + updates)
-            
-        Requirements: 1.3, 4.1, 4.3
-        """
+        """Batch upsert candles using executemany."""
         if not candles:
             return 0
         
@@ -329,17 +293,7 @@ class PostgresStorage:
             raise
 
     def insert_alerts_batch(self, alerts: List[Dict[str, Any]]) -> int:
-        """Batch insert alerts using executemany.
-        
-        Args:
-            alerts: List of alert dictionaries with keys:
-                timestamp, symbol, alert_type, severity, message, metadata
-                
-        Returns:
-            Number of inserted rows
-            
-        Requirements: 4.2, 4.3
-        """
+        """Batch insert alerts using executemany."""
         if not alerts:
             return 0
         
@@ -357,6 +311,10 @@ class PostgresStorage:
             (timestamp, symbol, alert_type, severity, message, metadata)
             VALUES (%(timestamp)s, %(symbol)s, %(alert_type)s, %(severity)s, 
                     %(message)s, %(metadata)s)
+            ON CONFLICT (timestamp, symbol, alert_type) DO UPDATE SET
+                severity = EXCLUDED.severity,
+                message = EXCLUDED.message,
+                metadata = EXCLUDED.metadata
         """
         
         def execute_batch():
@@ -385,12 +343,9 @@ class PostgresStorage:
             logger.error(f"Failed to batch insert alerts: {e}")
             raise
 
-    # ==================== Query Methods ====================
-
     def query_candles(
         self, symbol: str, start: datetime, end: datetime
     ) -> List[Dict[str, Any]]:
-        """Query 1-minute candles for a symbol within time range."""
         query = """
             SELECT timestamp, symbol, open, high, low, close, 
                    volume, quote_volume, trades_count, buy_count, sell_count
@@ -408,24 +363,7 @@ class PostgresStorage:
         end: datetime, 
         interval: str = "5m"
     ) -> List[Dict[str, Any]]:
-        """Query and aggregate 1m candles to higher timeframes using SQL.
-        
-        Uses date_trunc and array_agg for efficient server-side aggregation.
-        Window boundaries align to clock time (e.g., 5m candles start at :00, :05, :10...).
-        
-        Args:
-            symbol: Trading pair symbol (e.g., BTCUSDT)
-            start: Start datetime
-            end: End datetime
-            interval: Aggregation interval ("1m", "5m", or "15m")
-            
-        Returns:
-            List of aggregated candle dictionaries with same structure as query_candles():
-            timestamp, symbol, open, high, low, close, volume, quote_volume, trades_count,
-            buy_count, sell_count
-            
-        Requirements: 2.2, 2.4, 3.1-3.6
-        """
+        """Query and aggregate 1m candles to higher timeframes using SQL."""
         # For 1m interval, just return raw candles
         if interval == "1m":
             return self.query_candles(symbol, start, end)
@@ -471,7 +409,6 @@ class PostgresStorage:
         return result or []
 
     def query_indicators(self, symbol: str, start: datetime, end: datetime) -> List[Dict[str, Any]]:
-        """Query technical indicators for a symbol within time range."""
         query = """
             SELECT timestamp, symbol, rsi, macd, macd_signal, sma_20,
                    ema_12, ema_26, bb_upper, bb_lower, atr
@@ -483,7 +420,6 @@ class PostgresStorage:
         return result or []
 
     def query_alerts(self, symbol: str, start: datetime, end: datetime) -> List[Dict[str, Any]]:
-        """Query alerts for a symbol within time range."""
         query = """
             SELECT timestamp, symbol, alert_type, severity, message, metadata
             FROM alerts
@@ -508,17 +444,7 @@ class PostgresStorage:
     def query_trades_count(
         self, symbol: str, start: datetime, end: datetime, interval: str = "1h"
     ) -> List[Dict[str, Any]]:
-        """Query trades count aggregated by time interval.
-        
-        Args:
-            symbol: Trading pair symbol (e.g., BTCUSDT)
-            start: Start datetime
-            end: End datetime
-            interval: Time interval (1m, 1h, 1d)
-            
-        Returns:
-            List of dicts with timestamp, trades_count, interval
-        """
+        """Query trades count aggregated by time interval."""
         # Map interval to PostgreSQL date_trunc format
         interval_map = {
             "1m": "minute",
@@ -554,29 +480,13 @@ class PostgresStorage:
             for row in result
         ]
 
-    # ==================== Cleanup Operations ====================
-
     def cleanup_table(
         self,
         table_name: str,
         retention_days: int,
         batch_size: int = 1000
     ) -> int:
-        """Delete records older than retention period from a table.
-        
-        Processes deletions in batches to avoid long-running transactions
-        and minimize lock contention.
-        
-        Args:
-            table_name: Name of the table to clean up (trades_1m, indicators, alerts)
-            retention_days: Number of days to retain data
-            batch_size: Number of records to delete per batch
-            
-        Returns:
-            Total count of deleted records
-            
-        Requirements: 2.1, 2.2, 2.3, 2.4
-        """
+        """Delete records older than retention period from a table."""
         # Validate table name to prevent SQL injection
         valid_tables = {"trades_1m", "indicators", "alerts"}
         if table_name not in valid_tables:
@@ -652,19 +562,7 @@ class PostgresStorage:
             raise
 
     def cleanup_all_tables(self, retention_days: int, batch_size: int = 1000) -> Dict[str, int]:
-        """Cleanup all tables by deleting records older than retention period.
-        
-        Cleans up trades_1m, indicators, and alerts tables.
-        
-        Args:
-            retention_days: Number of days to retain data
-            batch_size: Number of records to delete per batch
-            
-        Returns:
-            Dictionary mapping table name to count of deleted records
-            
-        Requirements: 2.1, 2.2, 2.3
-        """
+        """Cleanup all tables by deleting records older than retention period."""
         tables = ["trades_1m", "indicators", "alerts"]
         results: Dict[str, int] = {}
         
@@ -682,10 +580,6 @@ class PostgresStorage:
         return results
 
 
-# ============================================================================
-# HEALTH CHECK
-# ============================================================================
-
 def check_postgres_health(
     host: str = "localhost",
     port: int = 5432,
@@ -696,7 +590,6 @@ def check_postgres_health(
     retry_delay: float = 1.0,
     **context
 ) -> Dict[str, Any]:
-    """Check PostgreSQL connection health."""
     retry_config = RetryConfig(
         max_retries=max_retries,
         initial_delay_ms=int(retry_delay * 1000),

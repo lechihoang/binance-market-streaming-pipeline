@@ -1,8 +1,4 @@
-"""
-Binance-Kafka Connector
-
-Real-time cryptocurrency data ingestion from Binance WebSocket to Kafka.
-"""
+"""Binance-Kafka Connector."""
 
 import asyncio
 import json
@@ -13,33 +9,34 @@ import websockets
 from pydantic import BaseModel
 from websockets.asyncio.client import ClientConnection
 
-from src.utils.config import get_env_str, get_env_int, get_env_list
+import os
+
 from src.utils.logging import setup_logging, get_logger
 from src.utils.retry import ExponentialBackoff
 from src.utils.metrics import record_error
 
 logger = get_logger(__name__)
 
-# Default streams (trade + ticker only, kline removed as unused)
 _DEFAULT_STREAMS = [
-    # Trade streams - used by TradeAggregationJob and AnomalyDetectionJob
     "btcusdt@trade", "ethusdt@trade", "bnbusdt@trade", "solusdt@trade", "xrpusdt@trade",
-    # Ticker streams - used by TickerConsumer
     "btcusdt@ticker", "ethusdt@ticker", "bnbusdt@ticker", "solusdt@ticker", "xrpusdt@ticker",
     "adausdt@ticker", "dogeusdt@ticker", "avaxusdt@ticker", "dotusdt@ticker", "maticusdt@ticker",
     "linkusdt@ticker", "ltcusdt@ticker", "uniusdt@ticker", "atomusdt@ticker", "shibusdt@ticker",
 ]
 
-# Configuration
-BINANCE_WS_URL = get_env_str("BINANCE_WS_URL", "wss://stream.binance.com:9443/stream")
-BINANCE_STREAMS = get_env_list("BINANCE_STREAMS", _DEFAULT_STREAMS)
-RECONNECT_MAX_DELAY_SECONDS = get_env_int("RECONNECT_MAX_DELAY_SECONDS", 60)
-WS_CONNECTION_TIMEOUT = get_env_int("WS_CONNECTION_TIMEOUT", 10)
-KAFKA_BOOTSTRAP_SERVERS = get_env_str("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-LOG_LEVEL = get_env_str("LOG_LEVEL", "INFO")
+def _get_env_list(key: str, default: list) -> list:
+    value = os.getenv(key)
+    if not value or not value.strip():
+        return default
+    return [item.strip() for item in value.split(",") if item.strip()]
 
-# Event type mapping: event -> (stream_type, topic)
-# Note: kline removed as it was not being consumed by any downstream processor
+BINANCE_WS_URL = os.getenv("BINANCE_WS_URL", "wss://stream.binance.com:9443/stream")
+BINANCE_STREAMS = _get_env_list("BINANCE_STREAMS", _DEFAULT_STREAMS)
+RECONNECT_MAX_DELAY_SECONDS = int(os.getenv("RECONNECT_MAX_DELAY_SECONDS", "60"))
+WS_CONNECTION_TIMEOUT = int(os.getenv("WS_CONNECTION_TIMEOUT", "10"))
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
 EVENT_MAPPING = {
     'trade': ('trade', 'raw_trades'),
     '24hrTicker': ('ticker', 'raw_tickers'),
@@ -47,7 +44,6 @@ EVENT_MAPPING = {
 
 
 class EnrichedMessage(BaseModel):
-    """Enriched message with metadata."""
     original_data: Dict[str, Any]
     ingestion_timestamp: int
     symbol: str
@@ -56,7 +52,6 @@ class EnrichedMessage(BaseModel):
 
 
 def process_message(raw_json: str) -> Optional[EnrichedMessage]:
-    """Parse and enrich a raw WebSocket message."""
     try:
         data = json.loads(raw_json)
         actual_data = data['data']
@@ -78,8 +73,6 @@ def process_message(raw_json: str) -> Optional[EnrichedMessage]:
 
 
 class BinanceWebSocketClient:
-    """Async WebSocket client for Binance with auto-reconnection."""
-
     def __init__(self, url: str, streams: List[str]):
         self.url = url
         self.streams = streams
@@ -93,7 +86,6 @@ class BinanceWebSocketClient:
         )
 
     async def connect(self) -> None:
-        """Connect to Binance WebSocket API."""
         try:
             logger.info(f"Connecting to {self.url}")
             self.websocket = await asyncio.wait_for(
@@ -115,7 +107,6 @@ class BinanceWebSocketClient:
             raise
 
     async def subscribe(self) -> None:
-        """Subscribe to configured streams."""
         if not self.websocket or not self.is_connected:
             raise RuntimeError("WebSocket not connected")
         
@@ -123,7 +114,6 @@ class BinanceWebSocketClient:
         await self.websocket.send(json.dumps(msg))
 
     async def _reconnect(self) -> None:
-        """Reconnect with exponential backoff."""
         while True:
             try:
                 delay = self._backoff.next_delay_ms() / 1000.0
@@ -138,7 +128,6 @@ class BinanceWebSocketClient:
                 record_error("binance_connector", "reconnection_failed", "warning")
 
     async def receive_messages(self) -> AsyncIterator[str]:
-        """Yield messages from WebSocket."""
         while True:
             try:
                 if not self.websocket or not self.is_connected:
@@ -157,7 +146,6 @@ class BinanceWebSocketClient:
                 record_error("binance_connector", "receive_error", "error")
 
     async def close(self) -> None:
-        """Close WebSocket connection."""
         if self.websocket:
             try:
                 await self.websocket.close()
@@ -169,8 +157,6 @@ class BinanceWebSocketClient:
 
 
 class BinanceKafkaConnector:
-    """Main connector: WebSocket -> Kafka."""
-    
     def __init__(self):
         from src.utils.kafka import KafkaConnector
         
@@ -183,7 +169,6 @@ class BinanceKafkaConnector:
         )
 
     async def run(self) -> None:
-        """Main loop: receive, process, send to Kafka."""
         await self.ws_client.connect()
         await self.ws_client.subscribe()
         logger.info(f"Started with {len(BINANCE_STREAMS)} streams")
@@ -195,7 +180,6 @@ class BinanceKafkaConnector:
 
 
 def main():
-    """Entry point."""
     setup_logging(level=LOG_LEVEL, json_output=True)
     logger.info("Starting Binance-Kafka Connector...")
     connector = BinanceKafkaConnector()

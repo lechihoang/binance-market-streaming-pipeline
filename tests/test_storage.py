@@ -12,10 +12,6 @@ Table of Contents:
 Requirements: 6.3
 """
 
-# ============================================================================
-# IMPORTS AND SETUP
-# ============================================================================
-
 import pytest
 import tempfile
 import os
@@ -29,10 +25,6 @@ from src.storage.minio import MinioStorage, check_minio_health
 from src.storage.query_router import QueryRouter
 from src.storage.storage_writer import StorageWriter
 
-
-# ============================================================================
-# REDIS AVAILABILITY CHECK
-# ============================================================================
 
 def is_redis_available():
     """Check if Redis is available for testing."""
@@ -52,10 +44,6 @@ skip_if_no_redis = pytest.mark.skipif(
     reason="Redis server not available at localhost:6379"
 )
 
-
-# ============================================================================
-# REDIS HEALTH CHECK TESTS
-# ============================================================================
 
 class TestRedisHealthCheck:
     """Tests for Redis health check (Hot Path)."""
@@ -123,10 +111,6 @@ class TestRedisHealthCheck:
         assert "Redis health check failed after 2 attempts" in str(exc_info.value)
 
 
-# ============================================================================
-# POSTGRESQL HEALTH CHECK TESTS
-# ============================================================================
-
 class TestPostgresHealthCheck:
     """Tests for PostgreSQL health check (Warm Path)."""
     
@@ -173,10 +157,6 @@ class TestPostgresHealthCheck:
         
         assert "PostgreSQL health check failed after 2 attempts" in str(exc_info.value)
 
-
-# ============================================================================
-# MINIO HEALTH CHECK TESTS
-# ============================================================================
 
 class TestMinioHealthCheck:
     """Tests for MinIO health check (Cold Path)."""
@@ -240,10 +220,6 @@ class TestMinioHealthCheck:
         assert "MinIO health check failed after 2 attempts" in str(exc_info.value)
 
 
-# ============================================================================
-# QUERY ROUTER FIXTURES AND STRATEGIES
-# ============================================================================
-
 # Strategy for generating time offsets in minutes (for Redis tier: < 60 minutes)
 redis_offset_minutes = st.integers(min_value=0, max_value=59)
 
@@ -292,10 +268,6 @@ def query_router(mock_redis, mock_postgres, mock_minio):
         minio=mock_minio,
     )
 
-
-# ============================================================================
-# QUERY ROUTER PROPERTY TESTS
-# ============================================================================
 
 class TestQueryRoutingCorrectness:
     """
@@ -365,10 +337,6 @@ class TestQueryRoutingCorrectness:
         assert selected_tier == self.TIER_MINIO
 
 
-# ============================================================================
-# REDIS STORAGE STRATEGIES
-# ============================================================================
-
 symbol_strategy = st.sampled_from([
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
     "DOGEUSDT", "SOLUSDT", "DOTUSDT", "MATICUSDT", "LTCUSDT"
@@ -426,10 +394,6 @@ def redis_storage():
 
 
 
-# ============================================================================
-# STORAGE WRITER STRATEGIES
-# ============================================================================
-
 trades_count_strategy = st.integers(min_value=0, max_value=1000000)
 rsi_strategy = st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False)
 macd_strategy = st.floats(min_value=-10000.0, max_value=10000.0, allow_nan=False, allow_infinity=False)
@@ -480,10 +444,6 @@ alert_data_strategy = st.fixed_dictionaries({
     }),
 })
 
-
-# ============================================================================
-# STORAGE WRITER PROPERTY TESTS
-# ============================================================================
 
 @skip_if_no_redis
 class TestPartialFailureResilience:

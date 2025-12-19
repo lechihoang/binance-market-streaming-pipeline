@@ -18,8 +18,8 @@
         "uid": "fastapi"
       },
       "gridPos": {
-        "h": 10,
-        "w": 24,
+        "h": 8,
+        "w": 12,
         "x": 0,
         "y": 0
       },
@@ -98,10 +98,10 @@
         "uid": "fastapi"
       },
       "gridPos": {
-        "h": 6,
+        "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 10
+        "x": 12,
+        "y": 0
       },
       "targets": [
         {
@@ -155,10 +155,10 @@
         "uid": "fastapi"
       },
       "gridPos": {
-        "h": 6,
+        "h": 8,
         "w": 12,
         "x": 12,
-        "y": 10
+        "y": 8
       },
       "targets": [
         {
@@ -212,10 +212,10 @@
         "uid": "fastapi"
       },
       "gridPos": {
-        "h": 6,
+        "h": 8,
         "w": 12,
         "x": 0,
-        "y": 16
+        "y": 8
       },
       "targets": [
         {
@@ -235,14 +235,8 @@
           "id": "calculateField",
           "options": {
             "mode": "binary",
-            "reduce": {
-              "reducer": "sum"
-            },
-            "binary": {
-              "left": "buy_count",
-              "operator": "/",
-              "right": "trades_count"
-            },
+            "reduce": { "reducer": "sum" },
+            "binary": { "left": "buy_count", "operator": "/", "right": "trades_count" },
             "alias": "buy_ratio"
           }
         },
@@ -250,14 +244,8 @@
           "id": "calculateField",
           "options": {
             "mode": "binary",
-            "reduce": {
-              "reducer": "sum"
-            },
-            "binary": {
-              "left": "buy_ratio",
-              "operator": "*",
-              "right": "100"
-            },
+            "reduce": { "reducer": "sum" },
+            "binary": { "left": "buy_ratio", "operator": "*", "right": "100" },
             "alias": "Buy %"
           }
         },
@@ -265,14 +253,8 @@
           "id": "calculateField",
           "options": {
             "mode": "binary",
-            "reduce": {
-              "reducer": "sum"
-            },
-            "binary": {
-              "left": "sell_count",
-              "operator": "/",
-              "right": "trades_count"
-            },
+            "reduce": { "reducer": "sum" },
+            "binary": { "left": "sell_count", "operator": "/", "right": "trades_count" },
             "alias": "sell_ratio"
           }
         },
@@ -280,14 +262,8 @@
           "id": "calculateField",
           "options": {
             "mode": "binary",
-            "reduce": {
-              "reducer": "sum"
-            },
-            "binary": {
-              "left": "sell_ratio",
-              "operator": "*",
-              "right": "100"
-            },
+            "reduce": { "reducer": "sum" },
+            "binary": { "left": "sell_ratio", "operator": "*", "right": "100" },
             "alias": "Sell %"
           }
         },
@@ -301,7 +277,7 @@
               "buy_ratio": true,
               "sell_ratio": true
             },
-            "indexByName": {},
+            "indexByName": { "Time": 0, "Buy %": 1, "Sell %": 2 },
             "renameByName": {}
           }
         }
@@ -315,17 +291,17 @@
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "Percentage",
+            "axisLabel": "",
             "axisPlacement": "left",
             "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "opacity",
+            "fillOpacity": 80,
+            "gradientMode": "none",
             "lineInterpolation": "smooth",
-            "lineWidth": 2,
+            "lineWidth": 0,
             "pointSize": 4,
-            "showPoints": "auto",
+            "showPoints": "never",
             "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
+            "stacking": { "group": "A", "mode": "normal" },
             "thresholdsStyle": { "mode": "off" }
           }
         },
@@ -346,12 +322,12 @@
       },
       "options": {
         "legend": {
-          "calcs": ["last", "min", "max"],
+          "calcs": ["lastNotNull"],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "tooltip": { "mode": "multi", "sort": "none" }
       }
     },
     {
@@ -366,7 +342,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 22
+        "y": 16
       },
       "targets": [
         {

@@ -107,9 +107,7 @@ The `QueryRouter` automatically selects the appropriate storage tier based on th
 .
 ├── dags/                          # Airflow DAG definitions
 │   ├── binance_connector_dag.py   # WebSocket connector orchestration
-│   ├── streaming_processing_dag.py # Spark jobs orchestration
-│   ├── lifecycle_cleanup_dag.py   # Data retention management
-│   └── ticker_monitor_dag.py      # Health monitoring
+│   └── streaming_processing_dag.py # Spark jobs orchestration
 ├── src/
 │   ├── api/
 │   │   └── app.py                 # FastAPI application
@@ -184,7 +182,6 @@ docker-compose up -d
 6. Enable the Airflow DAGs:
    - `binance_connector_dag` - Start data ingestion
    - `streaming_processing_dag` - Start stream processing
-   - `ticker_monitor_dag` - Enable health monitoring
 
 ### Stopping Services
 
@@ -227,15 +224,27 @@ docker-compose down -v
 
 ## Monitoring and Dashboards
 
-<!-- Add your dashboard screenshots here -->
-![Grafana Dashboard](docs/images/dashboard.png)
-
 ### Pre-configured Dashboards
 
-1. **Market Overview**: Real-time prices, volumes, and market summary
-2. **Symbol Deep Dive**: Detailed analysis for individual trading pairs
-3. **Trading Analytics**: Trade patterns and anomaly alerts
-4. **System Health**: Infrastructure monitoring and service status
+#### 1. Market Overview
+Real-time prices, volumes, and market summary across all trading pairs.
+
+![Market Overview Dashboard](img/dashboard1.png)
+
+#### 2. Symbol Deep Dive
+Detailed analysis for individual trading pairs with OHLCV charts and trade metrics.
+
+![Symbol Deep Dive Dashboard](img/dashboard2.png)
+
+#### 3. Trading Analytics
+Trade patterns, whale alerts, price spikes, and volume anomalies.
+
+![Trading Analytics Dashboard](img/dashboard3.png)
+
+#### 4. System Health
+Infrastructure monitoring, service status, and performance metrics.
+
+![System Health Dashboard](img/dashboard4.png)
 
 ### Metrics Collected
 
@@ -247,15 +256,33 @@ docker-compose down -v
 
 ## Airflow DAGs
 
-<!-- Add your DAG screenshots here -->
-![Airflow DAGs](docs/images/airflow-dags.png)
-
 | DAG | Schedule | Description |
 |-----|----------|-------------|
 | `binance_connector_dag` | Manual trigger | Runs WebSocket connector for data ingestion |
 | `streaming_processing_dag` | Every 5 minutes | Executes Spark streaming jobs |
-| `lifecycle_cleanup_dag` | Daily at 3 AM UTC | Data retention and compaction |
-| `ticker_monitor_dag` | Every 2 minutes | Health monitoring and alerting |
+
+### 1. Binance Connector DAG
+
+Manages the WebSocket connection to Binance API for real-time data ingestion. Runs continuously to stream trade and ticker data to Kafka topics.
+
+**Tasks:**
+- `check_kafka_health`: Verify Kafka broker connectivity
+- `run_binance_connector`: Start WebSocket client for trade/ticker streams
+- `run_ticker_consumer`: Consume ticker data from Kafka to Redis
+
+![Binance Connector DAG](img/dag1.png)
+
+### 2. Streaming Processing DAG
+
+Orchestrates Spark streaming jobs for data processing. Runs every 5 minutes to aggregate trades and detect anomalies.
+
+**Tasks:**
+- `health_checks`: Verify Redis, PostgreSQL, and MinIO connectivity
+- `trade_aggregation`: Compute 1-minute OHLCV candles with buy/sell metrics
+- `anomaly_detection`: Detect whale trades, price spikes, and volume anomalies
+- `cleanup_streaming`: Clean up resources after processing
+
+![Streaming Processing DAG](img/dag2.png)
 
 ## Configuration
 
@@ -307,30 +334,4 @@ Test categories:
 - Property-based tests using Hypothesis
 - End-to-end pipeline tests
 
-## Resource Requirements
 
-Minimum recommended resources for local development:
-
-| Service | Memory | CPU |
-|---------|--------|-----|
-| Kafka | 512MB | 0.5 |
-| Airflow Scheduler | 1.8GB | 2.5 |
-| Airflow Webserver | 512MB | 0.5 |
-| Redis | 100MB | - |
-| PostgreSQL (x2) | 256MB each | - |
-| MinIO | 256MB | - |
-| Grafana | 256MB | - |
-| Prometheus | 200MB | - |
-| Crypto API | 200MB | - |
-| Ticker Consumer | 256MB | - |
-
-Total: ~4.5GB RAM minimum
-
-## License
-
-This project is for educational and demonstration purposes.
-
-## Acknowledgments
-
-- Binance for providing the WebSocket API
-- Apache Software Foundation for Kafka, Spark, and Airflow

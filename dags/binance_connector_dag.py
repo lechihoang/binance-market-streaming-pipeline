@@ -1,14 +1,4 @@
-"""
-Binance Connector DAG
-
-Orchestrates the Binance WebSocket connector that ingests trade data into Kafka.
-This DAG runs independently from the streaming processing DAG.
-
-Tasks:
-- test_kafka_health: Check Kafka connectivity before starting connector
-- run_binance_connector: Run Binance WebSocket connector
-- cleanup_connector: Cleanup resources when connector finishes or fails
-"""
+"""Binance Connector DAG."""
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -42,9 +32,7 @@ with DAG(
     tags=['streaming', 'binance', 'connector'],
 ) as dag:
     
-    # Task 1: Test Kafka health before starting connector
     def check_kafka_health(**context):
-        """Simple Kafka health check using socket connection."""
         import socket
         kafka_servers = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092')
         host, port = kafka_servers.split(':')[0], int(kafka_servers.split(':')[1])
@@ -61,13 +49,9 @@ with DAG(
         python_callable=check_kafka_health,
     )
     
-    # Task 2: Run Binance connector
-    # Streams config is loaded from binance_kafka_connector.config module
-    # Only override BINANCE_STREAMS env var if explicitly set, otherwise use module defaults
     connector_env = {
         'KAFKA_BOOTSTRAP_SERVERS': os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:29092'),
     }
-    # Only pass BINANCE_STREAMS if explicitly set in environment
     if os.getenv('BINANCE_STREAMS'):
         connector_env['BINANCE_STREAMS'] = os.getenv('BINANCE_STREAMS')
     
@@ -78,12 +62,10 @@ with DAG(
         env=connector_env,
     )
     
-    # Task 3: Cleanup connector resources
     cleanup_connector_task = PythonOperator(
         task_id='cleanup_connector',
         python_callable=cleanup_connector_resources,
-        trigger_rule=TriggerRule.ALL_DONE,  # Run regardless of upstream status
+        trigger_rule=TriggerRule.ALL_DONE,
     )
     
-    # Set dependencies
     test_kafka_health >> run_binance_connector >> cleanup_connector_task

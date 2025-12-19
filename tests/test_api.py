@@ -14,10 +14,6 @@ Table of Contents:
 Requirements: 6.4
 """
 
-# ============================================================================
-# IMPORTS AND SETUP
-# ============================================================================
-
 import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
@@ -30,10 +26,6 @@ from src.storage.postgres import PostgresStorage
 from src.storage.minio import MinioStorage
 from src.storage.query_router import QueryRouter
 
-
-# ============================================================================
-# REDIS AVAILABILITY CHECK
-# ============================================================================
 
 def is_redis_available():
     """Check if Redis is available for testing."""
@@ -53,10 +45,6 @@ skip_if_no_redis = pytest.mark.skipif(
     reason="Redis server not available at localhost:6379"
 )
 
-
-# ============================================================================
-# MOCK STORAGE FACTORIES
-# ============================================================================
 
 def create_mock_redis():
     """Create a mock Redis storage that returns None for all queries."""
@@ -96,10 +84,6 @@ def create_mock_ticker_storage():
     mock.get_all_tickers.return_value = []
     return mock
 
-
-# ============================================================================
-# TEST FIXTURES
-# ============================================================================
 
 @pytest.fixture
 def redis_storage():
@@ -179,10 +163,6 @@ def fresh_client():
         rate_tracker._requests.clear()
 
 
-# ============================================================================
-# STRATEGIES FOR GENERATING TEST DATA
-# ============================================================================
-
 symbol_strategy = st.sampled_from([
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
     "DOGEUSDT", "SOLUSDT", "DOTUSDT", "MATICUSDT", "LTCUSDT"
@@ -229,10 +209,6 @@ valid_indicators = ["rsi", "macd", "macd_signal", "sma_20", "ema_12", "ema_26", 
 indicator_strategy = st.sampled_from(valid_indicators)
 indicator_subset_strategy = st.lists(indicator_strategy, min_size=1, max_size=5, unique=True)
 
-
-# ============================================================================
-# MARKET ROUTER TESTS
-# ============================================================================
 
 @skip_if_no_redis
 class TestTickerDataConsistency:
@@ -311,10 +287,6 @@ class TestTradesLimitConstraint:
         assert len(data) <= len(trades)
 
 
-# ============================================================================
-# ANALYTICS ROUTER TESTS
-# ============================================================================
-
 @pytest.fixture
 def mock_query_router():
     """Create a mock QueryRouter for testing tier selection logic."""
@@ -381,10 +353,6 @@ class TestQueryTierSelection:
         assert selected_tier == self.TIER_MINIO
 
 
-# ============================================================================
-# ALERTS ROUTER TESTS
-# ============================================================================
-
 @pytest.fixture
 def test_client_redis(redis_storage):
     """Create test client with mocked Redis dependency."""
@@ -431,10 +399,6 @@ class TestAlertsLimitConstraint:
         assert len(data) <= expected_max
         assert len(data) <= len(alerts)
 
-
-# ============================================================================
-# RATE LIMIT TESTS
-# ============================================================================
 
 class TestRateLimitEnforcement:
     """Property tests for rate limit enforcement."""
@@ -495,10 +459,6 @@ class TestRateLimitEnforcement:
         
         assert response.status_code != 429
 
-
-# ============================================================================
-# FALLBACK CHAIN TESTS
-# ============================================================================
 
 @pytest.fixture
 def test_client_with_fallback(redis_storage, postgres_storage, minio_storage):
@@ -569,10 +529,6 @@ class TestFallbackChainExecution:
         
         assert response.status_code == 404
 
-
-# ============================================================================
-# SYSTEM ROUTER TESTS
-# ============================================================================
 
 class TestHealthStatusLogic:
     """Property tests for health status logic."""

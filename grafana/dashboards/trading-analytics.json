@@ -11,15 +11,15 @@
   "panels": [
     {
       "id": 1,
-      "title": "Số giao dịch theo thời gian - ${symbol}USDT",
-      "type": "barchart",
+      "title": "Total Trades (1h) - ${symbol}USDT",
+      "type": "stat",
       "datasource": {
         "type": "marcusolsson-json-datasource",
         "uid": "fastapi"
       },
       "gridPos": {
-        "h": 10,
-        "w": 24,
+        "h": 5,
+        "w": 6,
         "x": 0,
         "y": 0
       },
@@ -27,62 +27,217 @@
         {
           "refId": "A",
           "method": "GET",
-          "urlPath": "/api/v1/analytics/trades-count?symbol=${symbol}USDT&interval=${interval}&limit=24",
+          "urlPath": "/api/v1/analytics/klines/${symbol}USDT?interval=1m&start=$__from&end=$__to",
           "fields": [
-            { "jsonPath": "$[*].timestamp", "name": "Time", "type": "time" },
-            { "jsonPath": "$[*].trades_count", "name": "Số giao dịch" }
+            { "jsonPath": "$[*].trades_count", "name": "Trades" }
           ]
         }
       ],
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "mode": "thresholds"
           },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "Số giao dịch",
-            "axisPlacement": "auto",
-            "fillOpacity": 80,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineWidth": 1,
-            "scaleDistribution": {
-              "type": "linear"
-            }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["sum"],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "title": "Buy Count (1h) - ${symbol}USDT",
+      "type": "stat",
+      "datasource": {
+        "type": "marcusolsson-json-datasource",
+        "uid": "fastapi"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "method": "GET",
+          "urlPath": "/api/v1/analytics/klines/${symbol}USDT?interval=1m&start=$__from&end=$__to",
+          "fields": [
+            { "jsonPath": "$[*].buy_count", "name": "Buys" }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
           },
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
       "options": {
-        "barRadius": 0,
-        "barWidth": 0.8,
-        "groupWidth": 0.7,
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
+        "reduceOptions": {
+          "calcs": ["sum"],
+          "fields": "",
+          "values": false
         },
-        "orientation": "vertical",
-        "showValue": "auto",
-        "stacking": "none",
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 7,
+      "title": "Sell Count (1h) - ${symbol}USDT",
+      "type": "stat",
+      "datasource": {
+        "type": "marcusolsson-json-datasource",
+        "uid": "fastapi"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "method": "GET",
+          "urlPath": "/api/v1/analytics/klines/${symbol}USDT?interval=1m&start=$__from&end=$__to",
+          "fields": [
+            { "jsonPath": "$[*].sell_count", "name": "Sells" }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null }
+            ]
+          },
+          "unit": "short"
         },
-        "xTickLabelRotation": -45,
-        "xTickLabelSpacing": 0
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["sum"],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 8,
+      "title": "Price Change (1h) - ${symbol}USDT",
+      "type": "stat",
+      "datasource": {
+        "type": "marcusolsson-json-datasource",
+        "uid": "fastapi"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "method": "GET",
+          "urlPath": "/api/v1/market/realtime",
+          "fields": [
+            { "jsonPath": "$.tickers[*].symbol", "name": "Symbol" },
+            { "jsonPath": "$.tickers[*].price_change_pct", "name": "Change %" }
+          ]
+        }
+      ],
+      "transformations": [
+        {
+          "id": "filterByValue",
+          "options": {
+            "filters": [
+              {
+                "fieldName": "Symbol",
+                "config": {
+                  "id": "equal",
+                  "options": { "value": "${symbol}USDT" }
+                }
+              }
+            ],
+            "type": "include",
+            "match": "any"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0 }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "/Change %/",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "text": {
+          "valueSize": 38
+        }
       }
     },
 
@@ -98,7 +253,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 10
+        "y": 5
       },
       "targets": [
         {
@@ -205,7 +360,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 20
+        "y": 15
       },
       "targets": [
         {
@@ -299,7 +454,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 20
+        "y": 15
       },
       "targets": [
         {
@@ -409,45 +564,11 @@
         "queryValue": "",
         "skipUrlSync": false,
         "type": "custom"
-      },
-      {
-        "current": {
-          "selected": true,
-          "text": "1h",
-          "value": "1h"
-        },
-        "description": "Khoảng thời gian cho biểu đồ số giao dịch",
-        "hide": 0,
-        "includeAll": false,
-        "label": "Khoảng thời gian",
-        "multi": false,
-        "name": "interval",
-        "options": [
-          {
-            "selected": false,
-            "text": "1 phút",
-            "value": "1m"
-          },
-          {
-            "selected": true,
-            "text": "1 giờ",
-            "value": "1h"
-          },
-          {
-            "selected": false,
-            "text": "1 ngày",
-            "value": "1d"
-          }
-        ],
-        "query": "1m,1h,1d",
-        "queryValue": "",
-        "skipUrlSync": false,
-        "type": "custom"
       }
     ]
   },
   "time": {
-    "from": "now-24h",
+    "from": "now-1h",
     "to": "now"
   },
   "timepicker": {},
